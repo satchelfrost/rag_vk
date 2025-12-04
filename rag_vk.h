@@ -1,3 +1,17 @@
+/* rag_vk - v0.0.0 - MIT license - https://github.com/satchelfrost/rag_vk
+
+   **WARNING** Probably don't use this, especially not v0.0.0
+
+   This file is an attempt to have a vulkan stb-style header-only library.
+   Currently, the header-only goal isn't being met very well. However, this
+   file is still being used in multiple projects, and the versions are starting to diverge.
+   Therefore, I've collected it into a repo to have a single source of authority,
+   and track different versions.
+
+   TODO: usage exaplanation and conventions
+
+*/
+
 #ifndef RAG_VK_H_
 #define RAG_VK_H_
 
@@ -10,13 +24,6 @@
 #else
 #define RVK_EXIT_APP
 #endif
-
-// TODO: renaming for better memory recall example 'rvk_upload_vtx_buff' is terse but hard to remember
-// the more verbose rvk_upload_vertex_buffer, would be easier to guess albeit slightly more typing
-// TODOOO: feature requesting should be little more robust, required to fix examples that require features
-// TODO: device specification should be more robust
-// TODO: texture and image needs to be rethought for example memory should be in texture
-// TODO: rework rvk_img_init in the same way I re-wored rvk_buff_init
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -3766,3 +3773,30 @@ void rvk_cmd_draw(uint32_t vertex_count)
 }
 
 #endif // RAG_VK_IMPLEMENTATION
+
+/*
+    Revision history:
+
+    0.0.0 (2025-12-04) Highly experimental version.
+
+*/
+
+/*
+   MIT License
+   Copyright (c) 2025 Reese Gallagher
+   Permission is hereby granted, free of charge, to any person obtaining a copy of
+   this software and associated documentation files (the "Software"), to deal in
+   the Software without restriction, including without limitation the rights to
+   use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+   of the Software, and to permit persons to whom the Software is furnished to do
+   so, subject to the following conditions:
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+*/
