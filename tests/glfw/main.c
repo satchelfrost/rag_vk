@@ -1,8 +1,9 @@
-#define VK_VALIDATION
 #define PLATFORM_DESKTOP_GLFW
 #define RAG_VK_IMPLEMENTATION
-#include "../../rag_vk.h"
+#include "../../rag_vk2.h"
+#include <stdio.h>
 
+#if 0
 typedef struct {
     float x;
     float y;
@@ -71,9 +72,13 @@ void create_pipeline()
     };
     rvk_basic_pl_init(config, &gfx_pl);
 }
+#endif
 
 int main()
 {
+    printf("hello world\n");
+
+#if 0
     rvk_init();
     create_pipeline();
 
@@ -108,5 +113,6 @@ int main()
     rvk_destroy();
     rvk_glfw_destroy();
 
+#endif
     return 0;
 }
