@@ -1,9 +1,20 @@
+#define OLD_VERSION 1
+
+#if OLD_VERSION
+#define VK_VALIDATION
+#define PLATFORM_DESKTOP_GLFW
+#define RAG_VK_IMPLEMENTATION
+#include "../../rag_vk.h"
+#include <stdio.h>
+#else
 #define PLATFORM_DESKTOP_GLFW
 #define RAG_VK_IMPLEMENTATION
 #include "../../rag_vk2.h"
 #include <stdio.h>
+#endif
 
-#if 0
+
+#if OLD_VERSION
 typedef struct {
     float x;
     float y;
@@ -76,9 +87,8 @@ void create_pipeline()
 
 int main()
 {
-    printf("hello world\n");
 
-#if 0
+#if OLD_VERSION
     rvk_init();
     create_pipeline();
 
@@ -112,6 +122,9 @@ int main()
     rvk_buff_destroy(quad_idx_buff);
     rvk_destroy();
     rvk_glfw_destroy();
+
+#else
+    if (!rvk_init()) return 1;
 
 #endif
     return 0;
