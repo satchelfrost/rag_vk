@@ -1,4 +1,4 @@
-#define OLD_VERSION 1
+#define OLD_VERSION 0
 
 #if OLD_VERSION
 #define VK_VALIDATION
@@ -9,7 +9,7 @@
 #else
 #define PLATFORM_DESKTOP_GLFW
 #define RAG_VK_IMPLEMENTATION
-#include "../../rag_vk2.h"
+#include "../../rag_vk.h"
 #include <stdio.h>
 #endif
 
@@ -72,8 +72,8 @@ void create_pipeline()
     };
     Pipeline_Config config = {
         .pl_layout = gfx_pl_layout,
-        .vert = "default.vert.spv",
-        .frag = "default.frag.spv",
+        .vert = "shaders/default.vert.spv",
+        .frag = "shaders/default.frag.spv",
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         .polygon_mode = VK_POLYGON_MODE_FILL,
         .vert_attrs = vert_attrs,
@@ -84,6 +84,24 @@ void create_pipeline()
     rvk_basic_pl_init(config, &gfx_pl);
 }
 #endif
+
+// void rvk_glfw_init(int width, int height, const char *title)
+// {
+//     if (rvk_glfw_window) {
+//         rvk_log(RVK_ERROR, "window handle was already initialized");
+//         RVK_EXIT_APP;
+//     }
+//     if (!glfwInit()) {
+//         rvk_log(RVK_ERROR, "failed to initialize glfw");
+//         RVK_EXIT_APP;
+//     }
+//     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+//     rvk_glfw_window = glfwCreateWindow(width, height, title, NULL, NULL);
+//     if (!rvk_glfw_window) {
+//         rvk_log(RVK_ERROR, "failed to create glfw window");
+//         RVK_EXIT_APP;
+//     }
+// }
 
 int main()
 {
@@ -124,7 +142,14 @@ int main()
     rvk_glfw_destroy();
 
 #else
-    if (!rvk_init()) return 1;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (!rvk_create_instance(&instance))          return 1;
+    // if (!create_glfw_surface(instance, &surface)) return 1;
+    // if (!rvk_lazy_desktop_init())                 return 1;
+    // rvk_set_window_resize_callback(glfw_window_resize);
+
 
 #endif
     return 0;
