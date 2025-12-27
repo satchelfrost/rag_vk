@@ -1,13 +1,7 @@
 /* 
     rag_vk - v1.0.0 - MIT license - https://github.com/satchelfrost/rag_vk
 
-    **WARNING** Probably don't use this, especially not v0.0.0
-
-    This file is an attempt to have a vulkan stb-style header-only library.
-    Currently, the header-only goal isn't being met very well. However, this
-    file is still being used in multiple projects, and the versions are starting to diverge.
-    Therefore, I've collected it into a repo to have a single source of authority,
-    and track different versions.
+    A C99 stb-style header-only library for Vulkan.
 
 usage:
 
@@ -19,72 +13,110 @@ usage:
         // TODO:
     }
 
-Two main APIs:
-    +============+====================================================================+
-    | API prefix | basic description                                                  |
-    +============+====================================================================+
-    | rag_vk_*   | Lazy helper functions that assume a lot.                           |
-    |            | Convenient, but not explicit.                                      |
-    +------------+--------------------------------------------------------------------+
-    | rvk_*      | Thin wrapper over vulkan functions.                                |
-    |            | Explicit, but with some default behavior which                     |
-    |            | can always be overridden to be more explicit.                      |
-    |            |                                                                    |  
-    |            | Adheres to the following conventions:                              |
-    |            |     1) Name is similar to vulkan proper function:                  |
-    |            |        vkCreateInstance --> rvk_create_instance                    |  
-    |            |                                                                    |  
-    |            |     2) Do not require "sType" fields to be set                     |
-    |            |                                                                    |  
-    |            |     3) fields of associated Vk*CreateInfos are passed in LAST as   |
-    |            |        optional "." parameters.                                    |
-    |            |        Examples:                                                   |  
-    |            |                                                                    |  
-    |            |        rvk_instance(NULL, &inst);                                  |
-    |            |        rvk_instance(&allocator, &inst);                            |
-    |            |        rvk_instance(NULL, &inst, .pApplicationInfo = &app_info);   |
-    |            |        rvk_instance(NULL, &inst, .ppEnabledLayerNames = &names);   |
-    |            |                                                                    |
-    |            |        Parameters beginning with a "." are optional, and named     |
-    |            |        the exact same (case and all) as their vulkan counterpart   |
-    |            |                                                                    |
-    |            |     4) If no optional parameters are used then defaults are        |
-    |            |        assumed when possible. Be careful.                          |
-    |            |                                                                    |
-    |            |     5) optional parameters that go together with an array count    |
-    |            |        can assume a count of 1 if the pointer to array is set      |
-    |            |        For example this:                                           |
-    |            |                                                                    |  
-    |            |        rvk_instance(                                               |
-    |            |           NULL,                                                    |
-    |            |           &instance,                                               |
-    |            |           .ppEnabledLayerNames = &names,                           |
-    |            |           .enabledLayerCount = 1,                                  |
-    |            |        );                                                          |
-    |            |                                                                    |  
-    |            |        is equivalent to this:                                      |  
-    |            |                                                                    |  
-    |            |        rvk_instance(                                               |
-    |            |           NULL,                                                    |
-    |            |           &instance,                                               |
-    |            |           .ppEnabledLayerNames = &names,                           |
-    |            |        );                                                          |
-    |            |                                                                    |  
-    |            |        if it's not 1, then set it accordingly                      |  
-    |            |                                                                    |  
-    |            |     6) when vulkan handles are optional parameters, and also not   |  
-    |            |        set, then the default lazy context is used. For example,    |
-    |            |        rvk_cmd_draw expects a command buffer, if one is not        |
-    |            |        explicity passed in then the default lazy command buffer    |
-    |            |        is used (if possible). PLEASE NOTE this ONLY works when     |
-    |            |        the lazy vulkan contex was initialized i.e.                 |
-    |            |        rag_vk_init_lazy_ctx_init()                                 |
-    |            |                                                                    |
-    +------------+--------------------------------------------------------------------+
-    vkCmdDraw
+Quick APIs overview:
+-------------------
+`rag_vk` consists of TWO separate APIs rag* and vk*:
 
-This file strictly adheres to conventions for your benefit,
+    rag*:
+        Lazy API. Fast prototyping. A lot of default behavior is assumed.
 
+        Use if:
+            1) you want to get something running quickly.
+            2) you are okay with a lot of default behavior which cannot be easily overriden.
+
+        Don't use if:
+            1) you care about optimal synchronization strategies e.g.
+               multiple frames in flight, or separation of graphics and compute queues.
+            2) you care about custom allocators
+            3) you need multi GPU support
+            4) you are trying to get the most out of Vulkan etc...
+
+    vk*:
+        Explicit API. Harder to use, but better mileage. Thin wrapper over Vulkan.
+        Some default behavior is assumed, but it can always be overriden.
+
+        Use this API if:
+            1) you need to be more explicit.
+
+        Don't use this API (probably) if:
+            1) you want to get something running quickly
+
+
+How to use vk*:
+--------------
+rag* uses vk*, so looking at rag*'s implementation can teach you how to use vk*.
+Listed below are the conventions followed by vk*:
+
+    1) function names are the same as their vulkan-proper counterparts but with snake_case.
+
+       For example:
+
+       vkCreateInstance ---> vk_create_instance
+
+    2) optional "." parameters are passed in last (requires C99)
+
+       For example:
+
+       `vk_create_instance` requires the first two parameters e.g.:
+
+       vk_create_instance(NULL, &inst);       <--- no allocator
+       vk_create_instance(&allocator, &inst); <--- allocator used
+
+       but, optional "." parameters can be passed in to be more explicit:
+
+       vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info); <--- explicit about the app info
+       vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names); <--- explicit about the enabled layer names
+
+       ***WARNING***: Optional parameters are NOT snake case.
+
+       But WHY?!?!
+
+       The optional parameters keep vulkans original camelCase for usability reasons.
+       The use-case goes something like this:
+
+           * you find a Vulkan function you need to use
+           * you look up (i.e. copy paste) the structures that you need
+           * you pass those values directly into the vk_* function with a "." prefix
+           * DONE.
+
+    3) Functions do not require "sType" fields to be set
+
+        For example:
+
+        vkInstanceCreateInfo info = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+
+        Does not need to be set to call vk_create_instance.
+
+    4) If no optional parameters are used then defaults are
+       assumed when possible. Be careful.
+
+       For example:
+
+       vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
+       vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicity command buffer
+
+       ***WARNING***: if you are using a default/fallback command buffer then it still must be explicity
+       initialized e.g. rag_init_lazy_ctx_init()
+
+    5) optional parameters for arrays assume a count of 1 by default
+
+       For example:
+
+       vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
+
+       is the same as,
+
+       vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
+
+       ***WARNING***: if it's not 1, then set it accordingly
+
+    6) when vulkan handles are optional parameters, and also not
+       set, then the default lazy context is used. For example,
+       vk_cmd_draw expects a command buffer, if one is not
+       explicity passed in then the default lazy command buffer
+       is used (if possible). PLEASE NOTE this ONLY works when
+       the lazy vulkan contex was initialized i.e.
+       rag_init_lazy_ctx_init()
 */
 
 /*
@@ -143,7 +175,7 @@ This file strictly adheres to conventions for your benefit,
 #endif
 
 #define VK_FLAGS_NONE 0
-#define RVK_LOAD_PFN(pfn) PFN_ ## pfn pfn = (PFN_ ## pfn) vkGetInstanceProcAddr(rvk_ctx.instance, #pfn)
+#define RVK_LOAD_PFN(pfn) PFN_ ## pfn pfn = (PFN_ ## pfn) vkGetInstanceProcAddr(vk_ctx.instance, #pfn)
 #define RVK_SUCCEEDED(x) ((x) == VK_SUCCESS)
 #define CLAMP(val, min, max) ((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val))
 #define RVK_ARRAY_LEN(array) (sizeof(array)/sizeof(array[0]))
@@ -190,19 +222,19 @@ typedef struct {
 
 /* logging and error handling */
 typedef enum { RVK_INFO, RVK_WARNING, RVK_ERROR, } Rvk_Log_Level;
-void rvk_log(Rvk_Log_Level level, const char *fmt, ...);
-const char *rvk_res_to_str(VkResult res);
-bool rvk_handle_bad_vk_result(VkResult result, const char* function);
-#define RAG_VK(func) rvk_handle_bad_vk_result(func, #func);
+void vk_log(Rvk_Log_Level level, const char *fmt, ...);
+const char *vk_res_to_str(VkResult res);
+bool vk_handle_bad_vk_result(VkResult result, const char* function);
+#define RAG_VK(func) vk_handle_bad_vk_result(func, #func);
 
 /* Basic API */
-bool rvk_lazy_vulkan_init(uint32_t width, uint32_t height, VkSurfaceKHR surface);
+bool vk_lazy_vulkan_init(uint32_t width, uint32_t height, VkSurfaceKHR surface);
 
 /* Thin Vulkan wrapper API */
-bool rvk_create_instance(VkInstance *instance);
+bool vk_create_instance(VkInstance *instance);
 
 /* callback that waits for frame buffer to resize and sets the width and height parameters on completion */
-typedef void (*rvk_glfw_wait_resize_frame_buffer)(uint32_t *width, uint32_t *height);
+typedef void (*vk_glfw_wait_resize_frame_buffer)(uint32_t *width, uint32_t *height);
 
 #endif // RAG_VK_H_
 
@@ -214,18 +246,18 @@ typedef void (*rvk_glfw_wait_resize_frame_buffer)(uint32_t *width, uint32_t *hei
 
 #ifdef RAG_VK_IMPLEMENTATION
 
-static Rvk_Context rvk_ctx = {0};
+static Rvk_Context vk_ctx = {0};
 
-bool rvk_check_result(VkResult result, const char* function)
+bool vk_check_result(VkResult result, const char* function)
 {
     if (!RVK_SUCCEEDED(result)) {
-        rvk_log(RVK_ERROR, "Vulkan Error: %s : %s", function, rvk_res_to_str(result));
+        vk_log(RVK_ERROR, "Vulkan Error: %s : %s", function, vk_res_to_str(result));
         return false;
     }
     return true;
 }
 
-void rvk_log(Rvk_Log_Level level, const char *fmt, ...)
+void vk_log(Rvk_Log_Level level, const char *fmt, ...)
 {
 #if defined(PLATFORM_ANDROID)
     va_list args;
@@ -264,12 +296,12 @@ void rvk_log(Rvk_Log_Level level, const char *fmt, ...)
 #endif // end of platform defines
 }
 
-bool rvk_lazy_vulkan_init(uint32_t width, uint32_t height)
+bool vk_lazy_vulkan_init(uint32_t width, uint32_t height)
 {
     return true;
 }
 
-const char *rvk_res_to_str(VkResult res)
+const char *vk_res_to_str(VkResult res)
 {
     /* these aren't all of the results, but I don't feel like dealing with different vulkan versions */
     switch (res) {

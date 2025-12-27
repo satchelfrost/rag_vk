@@ -145,7 +145,7 @@ int main()
 
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (!rvk_create_instance(&instance))          return 1;
+    // if (!rvk_create_instance(&instance))          return 1;
     // if (!create_glfw_surface(instance, &surface)) return 1;
     // if (!rvk_lazy_desktop_init())                 return 1;
     // rvk_set_window_resize_callback(glfw_window_resize);
