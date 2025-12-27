@@ -13,110 +13,113 @@ usage:
         // TODO:
     }
 
-Quick APIs overview:
--------------------
-`rag_vk` consists of TWO separate APIs rag* and vk*:
+Quick API overview:
+------------------
+`rag_vk` consists of TWO separate APIs; rag* and vk*:
 
     rag*:
-        Lazy API. Fast prototyping. A lot of default behavior is assumed.
+        Lazy API. Meant for quick prototyping. A lot of default behavior is assumed.
 
-        Use if:
-            1) you want to get something running quickly.
-            2) you are okay with a lot of default behavior which cannot be easily overriden.
+        USE: if you want to get something running quickly, and you are okay with a lot of
+        default behavior which cannot be easily overriden.
 
-        Don't use if:
-            1) you care about optimal synchronization strategies e.g.
-               multiple frames in flight, or separation of graphics and compute queues.
-            2) you care about custom allocators
-            3) you need multi GPU support
-            4) you are trying to get the most out of Vulkan etc...
+        DO NOT USE: if you care about optimal synchronization strategies or advanced features e.g.
+        multiple frames in flight, separation of graphics/compute queues, custom allocators,
+        multi GPU support i.e. you are trying to get the most out of Vulkan.
 
     vk*:
         Explicit API. Harder to use, but better mileage. Thin wrapper over Vulkan.
         Some default behavior is assumed, but it can always be overriden.
 
-        Use this API if:
-            1) you need to be more explicit.
+        USE: if you need to be more explicit.
 
-        Don't use this API (probably) if:
-            1) you want to get something running quickly
+        DO NOT USE: if you want to get something running quickly.
 
 
-How to use vk*:
---------------
-rag* uses vk*, so looking at rag*'s implementation can teach you how to use vk*.
-Listed below are the conventions followed by vk*:
+Workflow / Conventions of vk*:
+-----------------------------
+First determine the vulkan function you want to use:
 
-    1) function names are the same as their vulkan-proper counterparts but with snake_case.
+e.g.
+ 
+    vkCreateInstance(
+        const VkInstanceCreateInfo* pCreateInfo,
+        const VkAllocationCallbacks* pAllocator,
+        VkInstance* pInstance
+    );
+ 
+Then use it's snake case equivalent macro instead:
+ 
+    vk_create_instance(pAllocator, pInstance, ...);
+ 
+the "..." are optional parameters for the struct which is why they must be last e.g.:
+ 
+    vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
+ 
+Next, look up the needed structures and figure out what you want to be explicit about:
 
-       For example:
+e.g.
 
-       vkCreateInstance ---> vk_create_instance
+   VkInstanceCreateInfo info = {
+        VkStructureType             sType;
+        const void*                 pNext;
+        VkInstanceCreateFlags       flags;
+        const VkApplicationInfo*    pApplicationInfo; <--- Suppose I only want to specify this
+        uint32_t                    enabledLayerCount;
+        const char* const*          ppEnabledLayerNames;
+        uint32_t                    enabledExtensionCount;
+        const char* const*          ppEnabledExtensionNames;
+   };
 
-    2) optional "." parameters are passed in last (requires C99)
+Then I would do the following:
 
-       For example:
+   VkApplicationInfo app_info = {
+       .pApplicationName   = "My App Name",
+       .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
+       .pEngineName        = "My Custom Engine",
+       .engineVersion      = VK_MAKE_VERSION(0, 0, 1),
+       .apiVersion         = VK_API_VERSION_1_3,
+   };
+   VkInstance inst = VK_NULL_HANDLE;
+   vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
 
-       `vk_create_instance` requires the first two parameters e.g.:
+***WARNING***: Optional parameters are camel case for ease of copy-pasting.
 
-       vk_create_instance(NULL, &inst);       <--- no allocator
-       vk_create_instance(&allocator, &inst); <--- allocator used
+Common examples when optional parameters are not set:
 
-       but, optional "." parameters can be passed in to be more explicit:
+Example 1 - No need to set `.sType`:
 
-       vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info); <--- explicit about the app info
-       vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names); <--- explicit about the enabled layer names
+    vk_create_instance(NULL, &inst);
 
-       ***WARNING***: Optional parameters are NOT snake case.
+    is equivalent to,
 
-       But WHY?!?!
+    vk_create_instance(NULL, &inst, .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
 
-       The optional parameters keep vulkans original camelCase for usability reasons.
-       The use-case goes something like this:
+    Here we don't need to specify the sType because it's implied so vk_create_instance
+    just sets it internally
 
-           * you find a Vulkan function you need to use
-           * you look up (i.e. copy paste) the structures that you need
-           * you pass those values directly into the vk_* function with a "." prefix
-           * DONE.
+Example 2 - default command buffer:
 
-    3) Functions do not require "sType" fields to be set
+    vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
 
-        For example:
+    whereas,
 
-        vkInstanceCreateInfo info = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicit command buffer
 
-        Does not need to be set to call vk_create_instance.
+    ***WARNING***: if you want to use the default command buffer then it still must be explicity
+                   initialized e.g. rag_init_lazy_ctx().
 
-    4) If no optional parameters are used then defaults are
-       assumed when possible. Be careful.
+Example 3 - optional array parameters assume a default count of 1:
 
-       For example:
+    vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
 
-       vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
-       vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicity command buffer
+    is the same as,
 
-       ***WARNING***: if you are using a default/fallback command buffer then it still must be explicity
-       initialized e.g. rag_init_lazy_ctx_init()
+    vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
 
-    5) optional parameters for arrays assume a count of 1 by default
+    Since `.ppEnabledLayerNames` is not NULL, vk_create_instance will assumed an enabledLayerCount of 1.
+    If it shouldn't be 1, then you must explicity set it e.g. `enabledLayerCount = 2` etc.
 
-       For example:
-
-       vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
-
-       is the same as,
-
-       vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
-
-       ***WARNING***: if it's not 1, then set it accordingly
-
-    6) when vulkan handles are optional parameters, and also not
-       set, then the default lazy context is used. For example,
-       vk_cmd_draw expects a command buffer, if one is not
-       explicity passed in then the default lazy command buffer
-       is used (if possible). PLEASE NOTE this ONLY works when
-       the lazy vulkan contex was initialized i.e.
-       rag_init_lazy_ctx_init()
 */
 
 /*
