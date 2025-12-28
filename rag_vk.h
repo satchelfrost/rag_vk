@@ -1,138 +1,92 @@
 /* 
-    rag_vk - v1.0.0 - MIT license - https://github.com/satchelfrost/rag_vk
+    rag_vk - v1.0.0 - MIT license - https://github.com/satchelfrost/rvk
 
     A C99 stb-style header-only library for Vulkan.
 
-usage:
+Usage:
 
-    #define RAG_VK_IMPLEMENTATION
-    #include "rag_vk.h"
+    #define RVK_IMPLEMENTATION
+    #include "rvk.h"
 
     int main()
     {
         // TODO:
     }
 
-Quick API overview:
-------------------
-`rag_vk` consists of TWO separate APIs; rag* and vk*:
 
-    rag*:
-        Lazy API. Meant for quick prototyping. A lot of default behavior is assumed.
+The basic idea behind`rvk`:
 
-        USE: if you want to get something running quickly, and you are okay with a lot of
-        default behavior which cannot be easily overriden.
+    Too simple of an API, and you can no longer do complicated things;
+    too complicated of an API, and doing simple things becomes complicated.
+    `rvk` attempts to solve this by having overridable defaults.
+    For example, listed are several ways to create an instance:
 
-        DO NOT USE: if you care about optimal synchronization strategies or advanced features e.g.
-        multiple frames in flight, separation of graphics/compute queues, custom allocators,
-        multi GPU support i.e. you are trying to get the most out of Vulkan.
+        1) vk_create_instance(NULL, &inst);
+        2) vk_create_instance(&allocator, &inst);
+        3) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
+        4) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info, .ppEnabledLayerNames = layers);
+        5) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info, .ppEnabledLayerNames = layers,
+                              .enabledLayerCount = layer_count);
 
-    vk*:
-        Explicit API. Harder to use, but better mileage. Thin wrapper over Vulkan.
-        Some default behavior is assumed, but it can always be overriden.
+    Here 1) assumes a default application info, while 2) assumes that but also uses an allocator. 3) is explicit
+    about the app info. 4) is explicit about the enabled layer names, but assumes a count of 1 while 5) is explicit
+    about the layer count.
 
-        USE: if you need to be more explicit.
+    Now you have gist of how `rvk` works. The rest is understanding what the default behavior is, and when you
+    want to get rid of it.
 
-        DO NOT USE: if you want to get something running quickly.
+A few things to watch out for:
 
+    1) Optional "." parameters are "camelCase" for ease of struct member copy-pasting.
+    2) If the Vulkan-proper function takes multiple structs as arguments,
+       then the `vk_*` counterpart takes those structs as the optional arguments, not their members.
+    3) Defaults might cause issues if you are not expecting the default behavior.
+       To help you avoid confusion, some below examples are given.
 
-Workflow / Conventions of vk*:
------------------------------
-First determine the vulkan function you want to use:
+Example default cases:
 
-e.g.
- 
-    vkCreateInstance(
-        const VkInstanceCreateInfo* pCreateInfo,
-        const VkAllocationCallbacks* pAllocator,
-        VkInstance* pInstance
-    );
- 
-Then use it's snake case equivalent macro instead:
- 
-    vk_create_instance(pAllocator, pInstance, ...);
- 
-the "..." are optional parameters for the struct which is why they must be last e.g.:
- 
-    vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
- 
-Next, look up the needed structures and figure out what you want to be explicit about:
+    Example 1 - No need to set `.sType`:
 
-e.g.
+        vk_create_instance(NULL, &inst);
 
-   VkInstanceCreateInfo info = {
-        VkStructureType             sType;
-        const void*                 pNext;
-        VkInstanceCreateFlags       flags;
-        const VkApplicationInfo*    pApplicationInfo; <--- Suppose I only want to specify this
-        uint32_t                    enabledLayerCount;
-        const char* const*          ppEnabledLayerNames;
-        uint32_t                    enabledExtensionCount;
-        const char* const*          ppEnabledExtensionNames;
-   };
+        is equivalent to,
 
-Then I would do the following:
+        vk_create_instance(NULL, &inst, .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
 
-   VkApplicationInfo app_info = {
-       .pApplicationName   = "My App Name",
-       .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
-       .pEngineName        = "My Custom Engine",
-       .engineVersion      = VK_MAKE_VERSION(0, 0, 1),
-       .apiVersion         = VK_API_VERSION_1_3,
-   };
-   VkInstance inst = VK_NULL_HANDLE;
-   vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
+        Here we don't need to specify the sType because it's implied, so vk_create_instance just sets it internally.
 
-***WARNING***: Optional parameters are camel case for ease of copy-pasting.
+    Example 2 - Unless you disable it, a default Vulkan context MAY get allocated for you:
 
-Common examples when optional parameters are not set:
+        vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
 
-Example 1 - No need to set `.sType`:
+        whereas,
 
-    vk_create_instance(NULL, &inst);
+        vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicit about command buffer
 
-    is equivalent to,
+        This means that `vk_cmd_bind_descriptor_sets` checks if the command buffer is NULL, and if it is,
+        allocates a default vulkan context, which you can clean up later with `rvk_cleanup_default_ctx()`.
 
-    vk_create_instance(NULL, &inst, .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+        To disable this feature (for full control), you can define the following:
 
-    Here we don't need to specify the sType because it's implied so vk_create_instance
-    just sets it internally
+            #define RVK_NO_DEFAULT_CONTEXT
+            #include "rag_vk.h"
 
-Example 2 - default command buffer:
+        This means calling `vk_cmd_bind_descriptor_sets` without explicity passing a command buffer will assert
+        on a NULL vulkan handle. RAG_VK_ASSERT can also be redefined to do nothing, so in that case
+        you will likely segfault if the handle is NULL.
 
-    vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
+    Example 3 - optional array parameters assume a default count of 1:
 
-    whereas,
+        vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
 
-    vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicit command buffer
+        is the same as,
 
-    ***WARNING***: if you want to use the default command buffer then it still must be explicity
-                   initialized e.g. rag_init_lazy_ctx().
+        vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
 
-Example 3 - optional array parameters assume a default count of 1:
-
-    vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
-
-    is the same as,
-
-    vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
-
-    Since `.ppEnabledLayerNames` is not NULL, vk_create_instance will assumed an enabledLayerCount of 1.
-    If it shouldn't be 1, then you must explicity set it e.g. `enabledLayerCount = 2` etc.
+        If `.ppEnabledLayerNames` is not NULL, vk_create_instance will assume an enabledLayerCount of 1.
+        If the count should not be 1, then you must explicity set it e.g. `.enabledLayerCount = 2` etc.
 
 */
-
-/*
- * Goals for v1.0.0
- * 1) don't add deprecated functions
- * 2) Fat_Vk*CreateInfo macro in use
- * 3) thin vulkan functions should have no dependencies on global context
- * 4) For thin vulkan functions if certain parameters are needed and not passed in, then
- *    a default one may be used. For example, vkCmdBeginRenderPass requires a command buffer
- *    so for the thin vulkan wrapper vk_cmd_begin_render_pass, if a command buffer is not
- *    passed in, then we should assume a default.
- *
- * */
 
 #ifndef RAG_VK_H_
 #define RAG_VK_H_
