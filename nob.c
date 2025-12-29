@@ -8,8 +8,16 @@
 bool build_test_glfw(Cmd *cmd, bool run_after_building)
 {
     if (!mkdir_if_not_exists(BUILD GLFW)) return false;
+
+    // build glfw
+    // cmd_append(cmd, "gcc", "-I./tests/glfw/raylib-glfw/glfw/include");
+    // cmd_append(cmd, "./tests/glfw/raylib-glfw/rglfw.c", "-c", "-o", BUILD GLFW "glfw.o");
+    // if (!cmd_run(cmd)) return false;
+
+    // link main with glfw
     cmd_append(cmd, "gcc", "-I./tests/glfw/raylib-glfw/glfw/include", "-o", BUILD GLFW "main");
-    cmd_append(cmd, "tests/glfw/raylib-glfw/rglfw.c", "tests/glfw/main.c");
+    // cmd_append(cmd, "tests/glfw/main.c", BUILD GLFW "glfw.o");
+    cmd_append(cmd, "./tests/glfw/raylib-glfw/rglfw.c", "tests/glfw/main.c");
     cmd_append(cmd, "-lm", "-lvulkan");
     if (!cmd_run(cmd)) return false;
     

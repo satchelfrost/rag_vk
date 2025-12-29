@@ -1,47 +1,64 @@
 /* 
-    rag_vk - v1.0.0 - MIT license - https://github.com/satchelfrost/rvk
+    rag_vk - v1.0.0 - MIT license - https://github.com/satchelfrost/rag_vk
 
     A C99 stb-style header-only library for Vulkan.
 
 Usage:
 
-    #define RVK_IMPLEMENTATION
-    #include "rvk.h"
+    #define RAG_VK_IMPLEMENTATION
+    #include "rag_vk.h"
 
     int main()
     {
         // TODO:
     }
 
+rag_* vs vk_*?:
 
-The basic idea behind`rvk`:
+    rag_*:
 
-    Too simple of an API, and you can no longer do complicated things;
-    too complicated of an API, and doing simple things becomes complicated.
-    `rvk` attempts to solve this by having overridable defaults.
-    For example, listed are several ways to create an instance:
+        the functions beginning with "rag_" are the lazy non-explicit functions for fast prototyping. Their
+        implementation calls upon the "vk_*" functions. This also means that one way to understand "vk_*" is to
+        look at how rag_* uses them.
+
+    vk_*:
+
+        these are the explicit thin wrapper functions over Vulkan. They mostly work how you would expect since they
+        mimic the Vulkan-proper functions, the difference is that they have some (overridable) default behavior.
+
+
+The basic idea behind the vk_* functions:
+
+    These functions work by having overridable defaults.
+    For example, listed below are several valid ways to create a VkInstance:
 
         1) vk_create_instance(NULL, &inst);
         2) vk_create_instance(&allocator, &inst);
         3) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
-        4) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info, .ppEnabledLayerNames = layers);
-        5) vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info, .ppEnabledLayerNames = layers,
-                              .enabledLayerCount = layer_count);
+        4) vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers);
+        5) vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 2);
 
     Here 1) assumes a default application info, while 2) assumes that but also uses an allocator. 3) is explicit
-    about the app info. 4) is explicit about the enabled layer names, but assumes a count of 1 while 5) is explicit
-    about the layer count.
+    about the app info. 4) is explicit about the enabled layer names, but assumes an "enabledLayerCount" of 1,
+    while 5) is explicit about the count. Note that the optional parameters are "camelCase" to make copy-pasting
+    easier.
 
-    Now you have gist of how `rvk` works. The rest is understanding what the default behavior is, and when you
-    want to get rid of it.
+    The general workflow goes something like this:
+
+        1) I want to use a Vulkan function, so find the "vk_*" counterpart
+        2) look at the struct create info that I will need
+        3) only pass in the parts I care about (e.g. ".pApplicationInfo = blah")
 
 A few things to watch out for:
 
-    1) Optional "." parameters are "camelCase" for ease of struct member copy-pasting.
-    2) If the Vulkan-proper function takes multiple structs as arguments,
+    1) If the Vulkan-proper function takes multiple structs as arguments,
        then the `vk_*` counterpart takes those structs as the optional arguments, not their members.
-    3) Defaults might cause issues if you are not expecting the default behavior.
-       To help you avoid confusion, some below examples are given.
+       For example, `vk_create_instance` takes the MEMBERS of the VkInstanceCreateInfo as optional arguments,
+       while `vk_create_graphics_pipelines` takes several STRUCTS as the optional arguments.
+    2) If you are using the default Vulkan context (e.g. rag_init_default_ctx()) and also manually creating
+       anything in that context (e.g. VkInstance), then keep in mind there are now TWO of those things.
+       See Example 3 below.
+
 
 Example default cases:
 
@@ -55,57 +72,49 @@ Example default cases:
 
         Here we don't need to specify the sType because it's implied, so vk_create_instance just sets it internally.
 
-    Example 2 - Unless you disable it, a default Vulkan context MAY get allocated for you:
+    Example 2 - optional array parameters assume a default count of 1:
 
-        vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
+        These two function calls are identical:
 
-        whereas,
-
-        vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff); <--- explicit about command buffer
-
-        This means that `vk_cmd_bind_descriptor_sets` checks if the command buffer is NULL, and if it is,
-        allocates a default vulkan context, which you can clean up later with `rvk_cleanup_default_ctx()`.
-
-        To disable this feature (for full control), you can define the following:
-
-            #define RVK_NO_DEFAULT_CONTEXT
-            #include "rag_vk.h"
-
-        This means calling `vk_cmd_bind_descriptor_sets` without explicity passing a command buffer will assert
-        on a NULL vulkan handle. RAG_VK_ASSERT can also be redefined to do nothing, so in that case
-        you will likely segfault if the handle is NULL.
-
-    Example 3 - optional array parameters assume a default count of 1:
-
-        vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
-
-        is the same as,
-
-        vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
+            vk_create_instance(NULL, &inst, .ppEnabledLayerNames = &names, .enabledLayerCount = 1);
+            vk_create_instance(NULL, &instance, .ppEnabledLayerNames = &names);
 
         If `.ppEnabledLayerNames` is not NULL, vk_create_instance will assume an enabledLayerCount of 1.
-        If the count should not be 1, then you must explicity set it e.g. `.enabledLayerCount = 2` etc.
+        If the count should not be 1, then you must explicity set it e.g. `.enabledLayerCount = X` etc.
+
+    Example 3 - a default Vulkan context can be used as a fallback.
+
+        Suppose we want to bind to a descriptor set using a specific command buffer, then we do the following:
+
+            vk_cmd_bind_descriptor_sets(pl_layout, &set, .commandBuffer = cmd_buff);
+
+        If we don't provide the command buffer explicity, then the function will fail UNLESS we have
+        previously called `rag_init_default_ctx()`, in which case a default command buffer was allocated:
+
+            vk_cmd_bind_descriptor_sets(pl_layout, &set); <--- assumes default command buffer
+
+        The internal logic goes something like this:
+
+            VkCommandBuffer final_cmd_buff = VK_NULL_HANDLE;
+            if (optional_arg.commandBuffer)    final_cmd_buff = optional_arg.commandBuffer;
+            else if (default_context.cmd_buff) final_cmd_buff = default_context.cmd_buff;
+            else                               RAG_ASSERT(0 && "No command buffer specified");
+
+        Just be careful when using the default context AND manually specifying things in that context
+        because you will have duplicates.
 
 */
 
 #ifndef RAG_VK_H_
 #define RAG_VK_H_
 
-#define RVK_ASSERT assert
-#define RVK_REALLOC realloc
-#define RVK_FREE free
+#define RAG_ASSERT assert
+#define RAG_REALLOC realloc
+#define RAG_FREE free
 
-#ifdef PLATFORM_DESKTOP_GLFW
-#define RVK_EXIT_APP RVK_ASSERT(0)
-#else
-#define RVK_EXIT_APP
+#ifndef RAG_EXIT_APP
+#define RAG_EXIT_APP
 #endif
-
-/* try to use vulkan validation layers by default,
- * though it's still possible that validation is unsupported */
-#ifndef NO_VK_VALIDATION
-#define VK_VALIDATION
-#endif // NO_VK_VALIDATION
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -119,6 +128,10 @@ Example default cases:
 #include <stdio.h>
 #include <stdbool.h>
 
+#ifdef PLATFORM_DESKTOP_GLFW
+#include <GLFW/glfw3.h>
+#endif
+
 #ifdef PLATFORM_ANDROID
 #include <android_native_app_glue.h>
 #include <android/log.h>
@@ -127,71 +140,59 @@ Example default cases:
 #ifndef APP_NAME
     #define APP_NAME "app"
 #endif
-#ifndef MIN_SEVERITY
-    #define MIN_SEVERITY RVK_WARNING
+#ifndef RAG_VK_VALIDATION_LOG_LEVEL
+    #define RAG_VK_VALIDATION_LOG_LEVEL RAG_WARNING
 #endif
 
-#define VK_FLAGS_NONE 0
-#define RVK_LOAD_PFN(pfn) PFN_ ## pfn pfn = (PFN_ ## pfn) vkGetInstanceProcAddr(vk_ctx.instance, #pfn)
-#define RVK_SUCCEEDED(x) ((x) == VK_SUCCESS)
+#define RAG_LOAD_PFN(pfn) PFN_ ## pfn pfn = (PFN_ ## pfn) vkGetInstanceProcAddr(vk_ctx.instance, #pfn)
+#define RAG_SUCCEEDED(x) ((x) == VK_SUCCESS)
 #define CLAMP(val, min, max) ((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val))
-#define RVK_ARRAY_LEN(array) (sizeof(array)/sizeof(array[0]))
+#define RAG_ARRAY_LEN(array) (sizeof(array)/sizeof(array[0]))
 
-#define RVK_MAX_SWAPCHAIN_IMAGES 5
+#define RAG_MAX_SWAPCHAIN_IMAGES 5
 typedef struct {
     VkSwapchainKHR handle;
-    VkImage imgs[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkImageView img_views[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkFramebuffer frame_buffs[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkImage imgs[RAG_MAX_SWAPCHAIN_IMAGES];
+    VkImageView img_views[RAG_MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer frame_buffs[RAG_MAX_SWAPCHAIN_IMAGES];
     uint32_t img_count;
     bool resized;
     VkExtent2D extent;
-} Rvk_Swapchain;
+} Rag_Swapchain;
 
 typedef struct {
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;
     VkDebugReportCallbackEXT report_callback;
-    bool validation_supported;
+    // VkPhysicalDevice physical_device;
+    // VkDevice device;
+    // uint32_t queue_idx;
+    // VkQueue queue;
+    // VkCommandPool cmd_pool;
+    // VkCommandBuffer cmd_buff;
+    // VkSemaphore image_available_semaphore;
+    // VkSemaphore render_finished_semaphore;
+    // VkFence fence;
+    // VkSurfaceKHR surface;
+    // VkSurfaceFormatKHR surface_format;
+    // VkExtent2D extent;
+    // VkRenderPass render_pass;
+    // Rag_Swapchain swapchain;
+    // Rag_Image depth_img;
+    // VkImageView depth_img_view;
+} Rag_Context;
 
-    /* the lazy context will be used in cases where values
-     * are not explicity passed into functions */ 
-    struct {
-        VkPhysicalDevice physical_device;
-        // VkDevice device;
-        // uint32_t queue_idx;
-        // VkQueue queue;
-        // VkCommandPool cmd_pool;
-        // VkCommandBuffer cmd_buff;
-        // VkSemaphore image_available_semaphore;
-        // VkSemaphore render_finished_semaphore;
-        // VkFence fence;
-        VkSurfaceKHR surface;
-        // VkSurfaceFormatKHR surface_format;
-        // VkExtent2D extent;
-        // VkRenderPass render_pass;
-        Rvk_Swapchain swapchain;
-        // Rvk_Image depth_img;
-        // VkImageView depth_img_view;
-    } lazy;
-
-} Rvk_Context;
+VkDebugUtilsMessengerCreateInfoEXT rag_get_debug_messenger_info();
 
 /* logging and error handling */
-typedef enum { RVK_INFO, RVK_WARNING, RVK_ERROR, } Rvk_Log_Level;
-void vk_log(Rvk_Log_Level level, const char *fmt, ...);
-const char *vk_res_to_str(VkResult res);
-bool vk_handle_bad_vk_result(VkResult result, const char* function);
-#define RAG_VK(func) vk_handle_bad_vk_result(func, #func);
+typedef enum { RAG_INFO, RAG_WARNING, RAG_ERROR, } Rag_Log_Level;
+void rag_log(Rag_Log_Level level, const char *fmt, ...);
+const char *rag_vk_res_to_str(VkResult res);
+bool rag_check_vk_result(VkResult result, const char* function);
+#define RAG_VK(func) rag_check_vk_result(func, #func);
 
-/* Basic API */
-bool vk_lazy_vulkan_init(uint32_t width, uint32_t height, VkSurfaceKHR surface);
-
-/* Thin Vulkan wrapper API */
-bool vk_create_instance(VkInstance *instance);
-
-/* callback that waits for frame buffer to resize and sets the width and height parameters on completion */
-typedef void (*vk_glfw_wait_resize_frame_buffer)(uint32_t *width, uint32_t *height);
+#define vk_create_instance(pAllocator, pInstance, ...) vk_create_instance_(pAllocator, pInstance, (VkInstanceCreateInfo){__VA_ARGS__})
+bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pInstance, VkInstanceCreateInfo optional);
 
 #endif // RAG_VK_H_
 
@@ -203,46 +204,46 @@ typedef void (*vk_glfw_wait_resize_frame_buffer)(uint32_t *width, uint32_t *heig
 
 #ifdef RAG_VK_IMPLEMENTATION
 
-static Rvk_Context vk_ctx = {0};
+static Rag_Context rag_ctx = {0};
 
-bool vk_check_result(VkResult result, const char* function)
+bool rag_check_vk_result(VkResult result, const char* function)
 {
-    if (!RVK_SUCCEEDED(result)) {
-        vk_log(RVK_ERROR, "Vulkan Error: %s : %s", function, vk_res_to_str(result));
+    if (!RAG_SUCCEEDED(result)) {
+        rag_log(RAG_ERROR, "Vulkan Error: %s : %s", function, rag_vk_res_to_str(result));
         return false;
     }
     return true;
 }
 
-void vk_log(Rvk_Log_Level level, const char *fmt, ...)
+void rag_log(Rag_Log_Level level, const char *fmt, ...)
 {
 #if defined(PLATFORM_ANDROID)
     va_list args;
     va_start(args, fmt);
     switch (level) {
-    case RVK_INFO:
+    case RAG_INFO:
          __android_log_vprint(ANDROID_LOG_INFO,  APP_NAME, fmt, args);
         break;
-    case RVK_WARNING:
+    case RAG_WARNING:
          __android_log_vprint(ANDROID_LOG_WARN,  APP_NAME, fmt, args);
         break;
-    case RVK_ERROR:
+    case RAG_ERROR:
          __android_log_vprint(ANDROID_LOG_ERROR,  APP_NAME, fmt, args);
         break;
     }
 #else
     switch (level) {
-    case RVK_INFO:
-        fprintf(stderr, "[RVK][INFO] ");
+    case RAG_INFO:
+        fprintf(stderr, "[RAG][INFO] ");
         break;
-    case RVK_WARNING:
-        fprintf(stderr, "[RVK][WARNING] ");
+    case RAG_WARNING:
+        fprintf(stderr, "[RAG][WARNING] ");
         break;
-    case RVK_ERROR:
-        fprintf(stderr, "[RVK][ERROR] ");
+    case RAG_ERROR:
+        fprintf(stderr, "[RAG][ERROR] ");
         break;
     default:
-        RVK_EXIT_APP;
+        RAG_EXIT_APP;
     }
 
     va_list args;
@@ -253,12 +254,7 @@ void vk_log(Rvk_Log_Level level, const char *fmt, ...)
 #endif // end of platform defines
 }
 
-bool vk_lazy_vulkan_init(uint32_t width, uint32_t height)
-{
-    return true;
-}
-
-const char *vk_res_to_str(VkResult res)
+const char *rag_vk_res_to_str(VkResult res)
 {
     /* these aren't all of the results, but I don't feel like dealing with different vulkan versions */
     switch (res) {
@@ -295,6 +291,96 @@ const char *vk_res_to_str(VkResult res)
     case VK_ERROR_INVALID_SHADER_NV:              return "VK_ERROR_INVALID_SHADER_NV";
     default: return "unrecognized vkresult";
     }
+}
+
+bool rag_instance_layers_supported(const char **requested_layers, uint32_t requested_layer_count)
+{
+    uint32_t available_layer_count = 0;
+    vkEnumerateInstanceLayerProperties(&available_layer_count, NULL);
+    VkLayerProperties available_layers[available_layer_count];
+    vkEnumerateInstanceLayerProperties(&available_layer_count, available_layers);
+
+    for (size_t i = 0; i < requested_layer_count; i++) {
+        bool found = false;
+        for (size_t j = 0; j < available_layer_count; j++) {
+            if (strcmp(requested_layers[i], available_layers[j].layerName) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            rag_log(RAG_ERROR, "validation layer `%s` not available", requested_layers[i]);
+            return false;
+        }
+    }
+}
+
+bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pInstance, VkInstanceCreateInfo optional)
+{
+    // rag_ctx.using_validation = rag_validation_supported();
+
+    VkInstanceCreateInfo instance_ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+
+    VkApplicationInfo default_app_info = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = APP_NAME,
+        .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
+        .pEngineName = "rag_vk",
+        .engineVersion = VK_MAKE_VERSION(0, 0, 1),
+        .apiVersion = VK_API_VERSION_1_3,
+    };
+
+    instance_ci.pApplicationInfo = (optional.pApplicationInfo) ? optional.pApplicationInfo : &default_app_info;
+    instance_ci.pNext = optional.pNext;
+    instance_ci.ppEnabledLayerNames = optional.ppEnabledLayerNames;
+    instance_ci.enabledLayerCount = optional.enabledLayerCount;
+    instance_ci.ppEnabledExtensionNames = optional.ppEnabledExtensionNames;
+    instance_ci.enabledExtensionCount = optional.enabledExtensionCount;
+
+    if (optional.ppEnabledLayerNames && !instance_ci.enabledLayerCount)
+        instance_ci.enabledLayerCount = 1;
+    if (optional.ppEnabledExtensionNames && !instance_ci.enabledExtensionCount)
+        instance_ci.enabledExtensionCount = 1;
+
+    // if (!rvk_inst_exts_satisfied()) return false;
+
+    return RAG_VK(vkCreateInstance(&instance_ci, pAllocator, pInstance));
+}
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL rag_debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT msg_severity,
+    VkDebugUtilsMessageTypeFlagsEXT msg_type,
+    const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
+    void* p_user_data)
+{
+    (void)msg_type;
+    (void)p_user_data;
+
+    Rag_Log_Level log_lvl = RAG_INFO;
+
+    switch (msg_severity) {
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: log_lvl = RAG_INFO;    break;
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT:    log_lvl = RAG_INFO;    break;
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: log_lvl = RAG_WARNING; break;
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:   log_lvl = RAG_ERROR;   break;
+    default: return VK_FALSE;
+    }
+
+    if (log_lvl < RAG_VK_VALIDATION_LOG_LEVEL) return VK_FALSE;
+
+    rag_log(log_lvl, "%s", p_callback_data->pMessage);
+
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT rag_get_debug_messenger_info()
+{
+    return (VkDebugUtilsMessengerCreateInfoEXT) {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .messageSeverity = 0x1110, // error, warning, info
+        .messageType = 0x7, // general, validation, performance
+        .pfnUserCallback = rag_debug_callback,
+    };
 }
 
 #endif // RAG_VK_IMPLEMENTATION

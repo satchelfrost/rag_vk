@@ -1,156 +1,82 @@
-#define OLD_VERSION 0
-
-#if OLD_VERSION
-#define VK_VALIDATION
-#define PLATFORM_DESKTOP_GLFW
+// #define RAG_VK_VALIDATION_LOG_LEVEL RAG_INFO
 #define RAG_VK_IMPLEMENTATION
-#include "../../rag_vk.h"
-#include <stdio.h>
-#else
 #define PLATFORM_DESKTOP_GLFW
-#define RAG_VK_IMPLEMENTATION
 #include "../../rag_vk.h"
-#include <stdio.h>
-#endif
 
+#define NOB_STRIP_PREFIX
+#define NOB_IMPLEMENTATION
+#include "../../nob.h"
 
-#if OLD_VERSION
-typedef struct {
-    float x;
-    float y;
-    float z;
-} Vector3;
-
-typedef struct {
-    float x;
-    float y;
-} Vector2;
-
-typedef struct {
-    Vector3 pos;
-    Vector3 color;
-} Vertex; 
-
-#define QUAD_VERT_COUNT 4
-Vertex quad_verts[QUAD_VERT_COUNT] = {
-    {{-0.5f,  0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}}
-};
-
-#define QUAD_IDX_COUNT 6
-uint16_t quad_indices[QUAD_IDX_COUNT] = {
-    0, 1, 2, 2, 3, 0
-};
-
-VkPipeline gfx_pl;
-VkPipelineLayout gfx_pl_layout;
-
-void create_pipeline()
+GLFWwindow *rag_init_glfw(int width, int height, const char* title, GLFWmonitor* monitor, GLFWwindow* share)
 {
-    /* create pipeline layout */
-    VkPipelineLayoutCreateInfo layout_ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    rvk_pl_layout_init(layout_ci, &gfx_pl_layout);
+    if (!glfwInit()) {
+        printf("failed to initialize glfw\n");
+        return NULL;
+    }
 
-    /* create pipeline */
-    VkVertexInputAttributeDescription vert_attrs[] = {
-        {
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .location = 0,
-            .offset = offsetof(Vertex, pos),
-        },
-        {
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .location = 1,
-            .offset = offsetof(Vertex, color),
-        },
-    };
-    VkVertexInputBindingDescription vert_bindings = {
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-        .stride    = sizeof(Vertex),
-    };
-    Pipeline_Config config = {
-        .pl_layout = gfx_pl_layout,
-        .vert = "shaders/default.vert.spv",
-        .frag = "shaders/default.frag.spv",
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        .polygon_mode = VK_POLYGON_MODE_FILL,
-        .vert_attrs = vert_attrs,
-        .vert_attr_count = RVK_ARRAY_LEN(vert_attrs),
-        .vert_bindings = &vert_bindings,
-        .vert_binding_count = 1,
-    };
-    rvk_basic_pl_init(config, &gfx_pl);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    return glfwCreateWindow(width, height, title, monitor, share);
 }
-#endif
 
-// void rvk_glfw_init(int width, int height, const char *title)
-// {
-//     if (rvk_glfw_window) {
-//         rvk_log(RVK_ERROR, "window handle was already initialized");
-//         RVK_EXIT_APP;
-//     }
-//     if (!glfwInit()) {
-//         rvk_log(RVK_ERROR, "failed to initialize glfw");
-//         RVK_EXIT_APP;
-//     }
-//     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-//     rvk_glfw_window = glfwCreateWindow(width, height, title, NULL, NULL);
-//     if (!rvk_glfw_window) {
-//         rvk_log(RVK_ERROR, "failed to create glfw window");
-//         RVK_EXIT_APP;
-//     }
-// }
+bool rag_create_glfw_surface(VkInstance instance, GLFWwindow *window, const VkAllocationCallbacks *allocator, VkSurfaceKHR *surface)
+{
+    return RAG_VK(glfwCreateWindowSurface(instance, window, allocator, surface));
+}
+
+typedef struct {
+    const char **items;
+    size_t count;
+    size_t capacity;
+} Strings;
+
+void rag_append_glfw_extensions(Strings *strings)
+{
+    uint32_t glfw_ext_count = 0;
+    const char **glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
+    for (size_t i = 0; i < glfw_ext_count; i++)
+        da_append(strings, glfw_extensions[i]);
+}
+
+#define VK_VALIDATION true
 
 int main()
 {
-
-#if OLD_VERSION
-    rvk_init();
-    create_pipeline();
-
-    /* upload resources to GPU */
-    Rvk_Buffer quad_vtx_buff = {0};
-    Rvk_Buffer quad_idx_buff = {0};
-    rvk_vtx_buff_init(QUAD_VERT_COUNT * sizeof(Vertex),  QUAD_VERT_COUNT, quad_verts, &quad_vtx_buff);
-    rvk_idx_buff_init(QUAD_IDX_COUNT * sizeof(uint16_t), QUAD_IDX_COUNT, quad_indices, &quad_idx_buff);
-    rvk_buff_staged_upload(quad_vtx_buff);
-    rvk_buff_staged_upload(quad_idx_buff);
-
-    int esc = 0;
-    do {
-        rvk_wait_to_begin_gfx();
-            rvk_begin_rec_gfx();
-                rvk_begin_render_pass(0.0, 1.0, 1.0, 1.0);
-                    rvk_bind_gfx(gfx_pl, gfx_pl_layout, NULL, 0);
-                    rvk_draw_buffers(quad_vtx_buff, quad_idx_buff);
-                rvk_end_render_pass();
-            rvk_end_rec_gfx();
-        rvk_submit_gfx();
-
-        glfwPollEvents();
-        esc = glfwGetKey(rvk_glfw_window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-    } while (!esc && !glfwWindowShouldClose(rvk_glfw_window));
-
-    /* cleanup */
-    vkDeviceWaitIdle(rvk_ctx.device);
-    rvk_destroy_pl_res(gfx_pl, gfx_pl_layout);
-    rvk_buff_destroy(quad_vtx_buff);
-    rvk_buff_destroy(quad_idx_buff);
-    rvk_destroy();
-    rvk_glfw_destroy();
-
-#else
-
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    // if (!rvk_create_instance(&instance))          return 1;
-    // if (!create_glfw_surface(instance, &surface)) return 1;
-    // if (!rvk_lazy_desktop_init())                 return 1;
-    // rvk_set_window_resize_callback(glfw_window_resize);
+    GLFWwindow *window = rag_init_glfw(400, 400, "glfw", NULL, NULL);
+    if (!window) {
+        printf("failed to create glfw window\n");
+        return 1;
+    }
 
+    Strings extensions = {0};
+    rag_append_glfw_extensions(&extensions);
 
-#endif
+    Strings layers = {0};
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger = {0};
+    bool validation = VK_VALIDATION;
+    if (validation) {
+        da_append(&extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        da_append(&layers, "VK_LAYER_KHRONOS_validation");
+        debug_messenger = rag_get_debug_messenger_info();
+    }
+
+    if (rag_instance_layers_supported(layers.items, layers.count)) return 1;
+
+    bool result = vk_create_instance(
+        NULL,
+        &instance,
+        .pNext = &debug_messenger,
+        .ppEnabledLayerNames = layers.items,
+        .ppEnabledExtensionNames = extensions.items,
+        .enabledExtensionCount = extensions.count,
+    );
+    if (!result) return 1;
+
+    if (!rag_create_glfw_surface(instance, window, NULL, &surface)) {
+        printf("failed to create surface\n");
+        return 1;
+    }
+
     return 0;
 }
