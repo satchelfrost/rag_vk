@@ -1,82 +1,107 @@
-// #define RAG_VK_VALIDATION_LOG_LEVEL RAG_INFO
-#define RAG_VK_IMPLEMENTATION
+#define RVK_LOG_LEVEL RVK_INFO
+#define RVK_IMPLEMENTATION
 #define PLATFORM_DESKTOP_GLFW
 #include "../../rag_vk.h"
+
+#include <GLFW/glfw3.h>
 
 #define NOB_STRIP_PREFIX
 #define NOB_IMPLEMENTATION
 #include "../../nob.h"
 
-GLFWwindow *rag_init_glfw(int width, int height, const char* title, GLFWmonitor* monitor, GLFWwindow* share)
+#define VK_VALIDATION 1 
+
+static const char *instance_exts[] = {
+    "VK_KHR_surface",
+    "VK_KHR_xcb_surface",
+#if VK_VALIDATION_
+    "VK_EXT_debug_utils",
+#endif
+};
+static const char *layers[] = {
+#if VK_VALIDATION_
+    "VK_LAYER_KHRONOS_validation",
+#endif
+};
+static const char *devices_exts[] = {"VK_KHR_swapchain"};
+
+void r_log_queue_properties(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
 {
-    if (!glfwInit()) {
-        printf("failed to initialize glfw\n");
-        return NULL;
+    uint32_t queue_fam_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_fam_count, NULL);
+    VkQueueFamilyProperties queue_fam_props[queue_fam_count];
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_fam_count, queue_fam_props);
+    for (uint32_t i = 0; i < queue_fam_count; i++) {
+        VkBool32 present_support = false;
+        if (surface) vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &present_support);
+        printf("queue %u, present support: %s\n", i, (present_support) ? "true" : "false");
+
+        VkQueueFlags flags = queue_fam_props[i].queueFlags;
+        if (flags & VK_QUEUE_GRAPHICS_BIT        ) printf("    VK_QUEUE_GRAPHICS_BIT\n");
+        if (flags & VK_QUEUE_COMPUTE_BIT         ) printf("    VK_QUEUE_COMPUTE_BIT\n");
+        if (flags & VK_QUEUE_TRANSFER_BIT        ) printf("    VK_QUEUE_TRANSFER_BIT\n");
+        if (flags & VK_QUEUE_SPARSE_BINDING_BIT  ) printf("    VK_QUEUE_SPARSE_BINDING_BIT\n");
+        if (flags & VK_QUEUE_PROTECTED_BIT       ) printf("    VK_QUEUE_PROTECTED_BIT\n");
+        if (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) printf("    VK_QUEUE_VIDEO_DECODE_BIT_KHR\n");
+        if (flags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) printf("    VK_QUEUE_VIDEO_ENCODE_BIT_KHR\n");
+        if (flags & VK_QUEUE_OPTICAL_FLOW_BIT_NV ) printf("    VK_QUEUE_OPTICAL_FLOW_BIT_NV\n");
+    }
+}
+
+/* returns max unt32_t upon error
+ * surface == NULL means we don't care about present support */
+uint32_t r_find_queue(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags)
+{
+    uint32_t queue_fam_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_fam_count, NULL);
+    VkQueueFamilyProperties queue_fam_props[queue_fam_count];
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_fam_count, queue_fam_props);
+    for (uint32_t i = 0; i < queue_fam_count; i++) {
+        VkBool32 present_support = true;
+        bool flag_check = (queue_fam_props[i].queueFlags & flags) == flags;
+        if (surface) {
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &present_support);
+            if (flag_check && present_support) return i;
+        } else {
+            if (flag_check) return i;
+        }
     }
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    return glfwCreateWindow(width, height, title, monitor, share);
+    return -1;
 }
-
-bool rag_create_glfw_surface(VkInstance instance, GLFWwindow *window, const VkAllocationCallbacks *allocator, VkSurfaceKHR *surface)
-{
-    return RAG_VK(glfwCreateWindowSurface(instance, window, allocator, surface));
-}
-
-typedef struct {
-    const char **items;
-    size_t count;
-    size_t capacity;
-} Strings;
-
-void rag_append_glfw_extensions(Strings *strings)
-{
-    uint32_t glfw_ext_count = 0;
-    const char **glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
-    for (size_t i = 0; i < glfw_ext_count; i++)
-        da_append(strings, glfw_extensions[i]);
-}
-
-#define VK_VALIDATION true
 
 int main()
 {
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow *window = glfwCreateWindow(400, 400, "glfw", NULL, NULL);
     VkInstance instance = VK_NULL_HANDLE;
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    GLFWwindow *window = rag_init_glfw(400, 400, "glfw", NULL, NULL);
-    if (!window) {
-        printf("failed to create glfw window\n");
-        return 1;
-    }
-
-    Strings extensions = {0};
-    rag_append_glfw_extensions(&extensions);
-
-    Strings layers = {0};
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger = {0};
-    bool validation = VK_VALIDATION;
-    if (validation) {
-        da_append(&extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        da_append(&layers, "VK_LAYER_KHRONOS_validation");
-        debug_messenger = rag_get_debug_messenger_info();
-    }
-
-    if (rag_instance_layers_supported(layers.items, layers.count)) return 1;
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_ci = r_get_debug_messenger_info();
 
     bool result = vk_create_instance(
         NULL,
         &instance,
-        .pNext = &debug_messenger,
-        .ppEnabledLayerNames = layers.items,
-        .ppEnabledExtensionNames = extensions.items,
-        .enabledExtensionCount = extensions.count,
+        .pNext = (VK_VALIDATION) ? &debug_messenger_ci : NULL,
+        .ppEnabledLayerNames = layers,
+        .enabledLayerCount = ARRAY_LEN(layers),
+        .ppEnabledExtensionNames = instance_exts,
+        .enabledExtensionCount = ARRAY_LEN(instance_exts),
     );
-    if (!result) return 1;
+    assert(result && "failed to create vulkan instance");
 
-    if (!rag_create_glfw_surface(instance, window, NULL, &surface)) {
-        printf("failed to create surface\n");
-        return 1;
-    }
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    result = RVK(glfwCreateWindowSurface(instance, window, NULL, &surface))
+    assert(result && "failed to create window surface");
+
+    VkPhysicalDevice physical_device = r_pick_physical_device(instance);
+    assert(physical_device && "failed to find suitable physical device");
+
+    r_log_queue_properties(physical_device, surface);
+    uint32_t queue_idx = r_find_queue(physical_device, surface, VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT);
+    printf("queue %s, index = %u\n", (queue_idx == -1) ? "not found" : "found", queue_idx);
+
+    vkDestroySurfaceKHR(instance, surface, NULL);
+    vkDestroyInstance(instance, NULL);
 
     return 0;
 }
