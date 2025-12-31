@@ -13,7 +13,7 @@ Usage:
         // TODO:
     }
 
-API:
+Basics of the API:
     r_*:
 
         the functions beginning with "r_" are helper functions.
@@ -27,12 +27,7 @@ API:
             vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
             vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 1);
 
-        are all valid ways to create a vulkan instance.
-
-        Note that if the Vulkan-proper function takes multiple structs as arguments,
-        then the `vk_*` counterpart takes those structs as the optional arguments, not their members.
-        For example, `vk_create_instance` takes the MEMBERS of the VkInstanceCreateInfo as optional arguments,
-        while `vk_create_graphics_pipelines` takes several STRUCTS as the optional arguments.
+        Note that the optional arguments are for create infos only, and must go last do to the variadic macro.
 
         sTypes do not need to be specified because they are set internally e.g.:
 
@@ -41,6 +36,8 @@ API:
         is the same as:
 
             vk_create_instance(NULL, &inst, .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+
+        ***WARNING*** the exception to this is when pNext points to a structure with an sType.
 
     RVK/Rvk:
 
@@ -80,6 +77,61 @@ API:
 // #include <android/log.h>
 // #endif
 
+#define RVK_MAX_SWAPCHAIN_IMAGES 5
+typedef struct {
+    VkSwapchainKHR handle;
+    VkImage imgs[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkImageView img_views[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer frame_buffs[RVK_MAX_SWAPCHAIN_IMAGES];
+    uint32_t img_count;
+    bool buff_resized;
+    VkSurfaceFormatKHR format;
+    VkExtent2D extent;
+} Rvk_Swapchain;
+
+/***********************************************************************************
+*  r_* API declarations
+************************************************************************************/
+
+/* logging and error handling */
+typedef enum { RVK_VERBOSE, RVK_INFO, RVK_WARNING, RVK_ERROR, } Rvk_Log_Level;
+void r_log(Rvk_Log_Level level, const char *fmt, ...);
+const char *r_vk_res_to_str(VkResult res);
+bool r_check_vk_result(VkResult result, const char* function);
+#define RVK(func) r_check_vk_result(func, #func)
+VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info();
+
+bool r_instance_layers_supported(const char **requested_layers, uint32_t requested_layer_count);
+bool r_instance_extensions_supported(const char **requested_extensions, uint32_t requested_extension_count);
+VkPhysicalDevice r_pick_physical_device(VkInstance instance);
+
+/* returns max unt32_t upon error, surface == NULL means we don't care about present support */
+uint32_t r_find_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags);
+
+VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+uint32_t r_get_suggested_img_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+uint32_t r_get_current_transform(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfaceKHR surface, int width, int height);
+VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+
+
+/***********************************************************************************
+*  vk_* API declarations
+************************************************************************************/
+
+#define vk_create_instance(pAllocator, pInstance, ...) vk_create_instance_(pAllocator, pInstance, (VkInstanceCreateInfo){__VA_ARGS__})
+bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pInstance, VkInstanceCreateInfo ci);
+
+#define vk_create_device(physical_device, pAllocator, pDevice, ...) vk_create_device_(physical_device, pAllocator, pDevice, (VkDeviceCreateInfo){__VA_ARGS__})
+bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallbacks *pAllocator, VkDevice *pDevice, VkDeviceCreateInfo ci);
+
+#define vk_create_swapchain_khr(device, pAllocator, pSwapchain, ...) vk_create_swapchain_khr_(device, pAllocator, pSwapchain, (VkSwapchainCreateInfoKHR){__VA_ARGS__})
+bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks* pAlloc, VkSwapchainKHR* pSwp, VkSwapchainCreateInfoKHR ci);
+
+#endif // RVK_H_
+
+#ifdef RVK_IMPLEMENTATION
+
 #ifndef APP_NAME
     #define APP_NAME "app"
 #endif
@@ -94,44 +146,8 @@ API:
 #define RVK_ARRAY_LEN(array) (sizeof(array)/sizeof(array[0]))
 
 /***********************************************************************************
-*
-*  r_* API - Convenience functions
-*
+*  r_* API implementation
 ************************************************************************************/
-
-
-/* logging and error handling */
-typedef enum { RVK_VERBOSE, RVK_INFO, RVK_WARNING, RVK_ERROR, } Rvk_Log_Level;
-void r_log(Rvk_Log_Level level, const char *fmt, ...);
-const char *r_vk_res_to_str(VkResult res);
-bool r_check_vk_result(VkResult result, const char* function);
-#define RVK(func) r_check_vk_result(func, #func)
-VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info();
-bool r_instance_layers_supported(const char **requested_layers, uint32_t requested_layer_count);
-bool r_instance_extensions_supported(const char **requested_extensions, uint32_t requested_extension_count);
-VkPhysicalDevice r_pick_physical_device(VkInstance instance);
-uint32_t r_find_queue(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags);
-
-/***********************************************************************************
-*
-*  vk_* API - Thin wrapper over Vulkan
-*
-************************************************************************************/
-#define vk_create_instance(pAllocator, pInstance, ...) vk_create_instance_(pAllocator, pInstance, (VkInstanceCreateInfo){__VA_ARGS__})
-bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pInstance, VkInstanceCreateInfo ci);
-
-#define vk_create_device(physical_device, pAllocator, pDevice, ...) vk_create_device_(physical_device, pAllocator, pDevice, (VkDeviceCreateInfo){__VA_ARGS__})
-bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallbacks *pAllocator, VkDevice *pDevice, VkDeviceCreateInfo ci);
-
-#endif // RVK_H_
-
-/***********************************************************************************
-*
-*   r_vk Implementation
-*
-************************************************************************************/
-
-#ifdef RVK_IMPLEMENTATION
 
 bool r_check_vk_result(VkResult result, const char* function)
 {
@@ -325,7 +341,14 @@ VkPhysicalDevice r_pick_physical_device(VkInstance instance)
             VkPhysicalDeviceProperties props = {0};
             vkGetPhysicalDeviceProperties(devices[j], &props);
             if (props.deviceType == rankings[i]) {
-                r_log(RVK_INFO, "GPU selected: %s", props.deviceName);
+                char *device_type = NULL;
+                switch (props.deviceType) {
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: device_type = "Discrete"; break;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: device_type = "Integrated"; break;
+                case VK_PHYSICAL_DEVICE_TYPE_CPU: device_type = "CPU"; break;
+                default: device_type = "N/A";
+                }
+                r_log(RVK_INFO, "Selected %s-GPU: %s", device_type, props.deviceName);
                 return devices[i];
             }
         }
@@ -334,9 +357,7 @@ VkPhysicalDevice r_pick_physical_device(VkInstance instance)
     return VK_NULL_HANDLE;
 }
 
-/* returns max unt32_t upon error
- * surface == NULL means we don't care about present support */
-uint32_t r_find_queue(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags)
+uint32_t r_find_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags)
 {
     uint32_t queue_fam_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_fam_count, NULL);
@@ -383,6 +404,72 @@ void r_log_queue_properties(VkPhysicalDevice physical_device, VkSurfaceKHR surfa
     }
 }
 
+VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+{
+    uint32_t surface_fmt_count = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &surface_fmt_count, NULL);
+    VkSurfaceFormatKHR fmts[surface_fmt_count];
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &surface_fmt_count, fmts);
+    for (size_t i = 0; i < surface_fmt_count; i++) {
+        if (fmts[i].format == VK_FORMAT_B8G8R8A8_SRGB && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return fmts[i];
+        }
+    }
+
+    return fmts[0];
+}
+
+VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfaceKHR surface, int width, int height)
+{
+    VkSurfaceCapabilitiesKHR capabilities = {0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        return capabilities.currentExtent;
+    } else {
+        return (VkExtent2D) {
+            .width  = CLAMP(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+            .height = CLAMP(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height),
+        };
+    }
+}
+
+uint32_t r_get_suggested_img_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+{
+    VkSurfaceCapabilitiesKHR capabilities = {0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
+    uint32_t img_count = capabilities.minImageCount + 1;
+    if (capabilities.maxImageCount > 0 && img_count > capabilities.minImageCount)
+        img_count = capabilities.maxImageCount;
+
+    return img_count;
+}
+
+uint32_t r_get_current_transform(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+{
+    uint32_t img_count = 0;
+    VkSurfaceCapabilitiesKHR capabilities = {0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
+    return capabilities.currentTransform;
+}
+
+VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+{
+    uint32_t present_mode_count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, NULL);
+    VkPresentModeKHR present_modes[present_mode_count];
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, present_modes);
+    for (size_t i = 0; i < present_mode_count; i++) {
+        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            return present_modes[i];
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+/***********************************************************************************
+*  vk_* API implementation
+************************************************************************************/
+
 bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pInstance, VkInstanceCreateInfo ci)
 {
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -406,6 +493,11 @@ bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallb
     }
 
     return RVK(vkCreateDevice(physical_device, &ci, pAllocator, pDevice));
+}
+
+bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks* pAlloc, VkSwapchainKHR* pSwp, VkSwapchainCreateInfoKHR ci) {
+    ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    return RVK(vkCreateSwapchainKHR(device, &ci, pAlloc, pSwp));
 }
 
 #endif // RVK_IMPLEMENTATION
