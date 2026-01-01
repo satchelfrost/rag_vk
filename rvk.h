@@ -16,7 +16,8 @@ Usage:
 Basics of the API:
     r_*:
 
-        the functions beginning with "r_" are helper functions.
+        the functions beginning with "r_" are helper/lazy functions. These are considered low mileage,
+        they are good for fast prototyping, but if you need to be more explicit then use vk_*.
 
     vk_*:
 
@@ -80,12 +81,12 @@ Basics of the API:
 #define RVK_MAX_SWAPCHAIN_IMAGES 5
 typedef struct {
     VkSwapchainKHR handle;
-    VkImage imgs[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkImageView img_views[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkFramebuffer frame_buffs[RVK_MAX_SWAPCHAIN_IMAGES];
-    uint32_t img_count;
-    bool buff_resized;
-    VkSurfaceFormatKHR format;
+    VkImage images[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkImageView image_views[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer framebuffers[RVK_MAX_SWAPCHAIN_IMAGES];
+    uint32_t image_count;
+    bool resized;
+    VkSurfaceFormatKHR surface_format;
     VkExtent2D extent;
 } Rvk_Swapchain;
 
@@ -109,11 +110,15 @@ VkPhysicalDevice r_pick_physical_device(VkInstance instance);
 uint32_t r_find_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags);
 
 VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
-uint32_t r_get_suggested_img_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+uint32_t r_get_suggested_image_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 uint32_t r_get_current_transform(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfaceKHR surface, int width, int height);
 VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 
+/* create a basic render pass with color and depth attachments */
+bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass);
+
+bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -126,7 +131,16 @@ bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pI
 bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallbacks *pAllocator, VkDevice *pDevice, VkDeviceCreateInfo ci);
 
 #define vk_create_swapchain_khr(device, pAllocator, pSwapchain, ...) vk_create_swapchain_khr_(device, pAllocator, pSwapchain, (VkSwapchainCreateInfoKHR){__VA_ARGS__})
-bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks* pAlloc, VkSwapchainKHR* pSwp, VkSwapchainCreateInfoKHR ci);
+bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain, VkSwapchainCreateInfoKHR ci);
+
+#define vk_create_image_view(device, pAllocator, pView, ...) vk_create_image_view_(device, pAllocator, pView, (VkImageViewCreateInfo){__VA_ARGS__})
+bool vk_create_image_view_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkImageView *pView, VkImageViewCreateInfo ci);
+
+#define vk_create_render_pass(device, pAllocator, pRenderPass, ...) vk_create_render_pass_(device, pAllocator, pRenderPass, (VkRenderPassCreateInfo){__VA_ARGS__})
+bool vk_create_render_pass_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkRenderPass *pRenderPass, VkRenderPassCreateInfo ci);
+
+#define vk_create_image(device, pAllocator, pImage, ...) vk_create_image_(device, pAllocator, pImage, (VkImageCreateInfo){__VA_ARGS__})
+bool vk_create_image_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkImage *pImage, VkImageCreateInfo ci);
 
 #endif // RVK_H_
 
@@ -404,7 +418,7 @@ void r_log_queue_properties(VkPhysicalDevice physical_device, VkSurfaceKHR surfa
     }
 }
 
-VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+VkSurfaceFormatKHR r_choose_swapchain_surface_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
 {
     uint32_t surface_fmt_count = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &surface_fmt_count, NULL);
@@ -433,7 +447,7 @@ VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfac
     }
 }
 
-uint32_t r_get_suggested_img_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+uint32_t r_get_suggested_image_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
 {
     VkSurfaceCapabilitiesKHR capabilities = {0};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
@@ -466,6 +480,122 @@ VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfa
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass)
+{
+    VkAttachmentDescription color = {
+        .format = color_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+    VkAttachmentReference color_ref = {.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentDescription depth = {
+        .format = depth_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference depth_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    VkSubpassDescription subpass = {
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = &depth_ref,
+    };
+    VkAttachmentDescription attachments[] = {color, depth};
+    VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+
+    return vk_create_render_pass(
+        device,
+        NULL,
+        render_pass,
+        .attachmentCount = RVK_ARRAY_LEN(attachments),
+        .pAttachments = attachments,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
+    );
+}
+
+bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain)
+{
+    bool result = true;
+
+    swapchain->surface_format = r_choose_swapchain_surface_format(physical_device, surface),
+    swapchain->extent         = r_suggest_swapchain_extent(physical_device, surface, width, height),
+    swapchain->image_count    = r_get_suggested_image_count(physical_device, surface),
+
+    result = vk_create_swapchain_khr(
+        device,
+        NULL,
+        &swapchain->handle,
+        .surface = surface,
+        .minImageCount = swapchain->image_count, // this is technically only a suggestion
+        .imageFormat = swapchain->surface_format.format,
+        .imageColorSpace = swapchain->surface_format.colorSpace,
+        .imageExtent = swapchain->extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .clipped = VK_TRUE,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = r_choose_present_mode(physical_device, surface),
+        .preTransform = r_get_current_transform(physical_device, surface),
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    );
+    if (!result) return false;
+
+    /* */
+    result = RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, NULL));
+    if (!result) return false;
+    if (swapchain->image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
+        r_log(RVK_ERROR, "swapchain RVK_MAX_SWAPCHAIN_IMAGES %zu was exceeded", RVK_MAX_SWAPCHAIN_IMAGES);
+        return false;
+    }
+    result = RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, swapchain->images));
+    if (!result) return false;
+
+    /* create the image views for the swapchain */
+    for (size_t i = 0; i < swapchain->image_count; i++) {
+        result = vk_create_image_view(
+            device,
+            NULL,
+            &swapchain->image_views[i],
+            .image = swapchain->images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = swapchain->surface_format.format,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        );
+        if (!result) {
+            r_log(RVK_ERROR, "failed to create image %zu", i);
+            return false;
+        }
+    }
+
+
+    return result;
+}
+
 /***********************************************************************************
 *  vk_* API implementation
 ************************************************************************************/
@@ -495,9 +625,28 @@ bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallb
     return RVK(vkCreateDevice(physical_device, &ci, pAllocator, pDevice));
 }
 
-bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks* pAlloc, VkSwapchainKHR* pSwp, VkSwapchainCreateInfoKHR ci) {
+bool vk_create_swapchain_khr_(VkDevice device, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain, VkSwapchainCreateInfoKHR ci)
+{
     ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    return RVK(vkCreateSwapchainKHR(device, &ci, pAlloc, pSwp));
+    return RVK(vkCreateSwapchainKHR(device, &ci, pAllocator, pSwapchain));
+}
+
+bool vk_create_image_view_(VkDevice device, const VkAllocationCallbacks* pAllocator, VkImageView* pView, VkImageViewCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    return RVK(vkCreateImageView(device, &ci, pAllocator, pView));
+}
+
+bool vk_create_render_pass_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkRenderPass *pRenderPass, VkRenderPassCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    return RVK(vkCreateRenderPass(device, &ci, pAllocator, pRenderPass));
+}
+
+bool vk_create_image_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkImage *pImage, VkImageCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    return RVK(vkCreateImage(device, &ci, pAllocator, pImage));
 }
 
 #endif // RVK_IMPLEMENTATION

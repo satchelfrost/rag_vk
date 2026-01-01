@@ -37,12 +37,14 @@ static const char *device_exts[] = {"VK_KHR_swapchain"};
 
 int main()
 {
+    /* initialize glfw and window */
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "glfw", NULL, NULL);
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger_ci = r_get_debug_messenger_info();
 
+    /* create vulkan instance (w/ or w/o validation layers i.e. VK_VALIDATION = 1/0) */
     bool result = vk_create_instance(
         NULL,
         &instance,
@@ -54,17 +56,23 @@ int main()
     );
     assert(result && "failed to create vulkan instance");
 
+    /* create the vulkan surface */
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     result = RVK(glfwCreateWindowSurface(instance, window, NULL, &surface));
     assert(result && "failed to create window surface");
 
+    /* pick physical device (tries to prefer discrete GPU) */
     VkPhysicalDevice physical_device = r_pick_physical_device(instance);
     assert(physical_device && "failed to find suitable physical device");
 
-    VkQueueFlags flags = VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT;
-    uint32_t queue_fam_idx = r_find_queue_family(physical_device, surface, flags);
+    /* find a queue family with graphics & present support.
+     * if we don't care about present support set surface = NULL.
+     * if we want a queue family with compute and graphics set flags e.g.:
+     *     VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT */
+    uint32_t queue_fam_idx = r_find_queue_family(physical_device, surface, VK_QUEUE_GRAPHICS_BIT);
     assert(queue_fam_idx != -1 && "queue family unsatisfactory");
 
+    /* create a device with the queue family index and physical device we picked */
     VkDevice device = VK_NULL_HANDLE;
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queue_ci = {
@@ -85,40 +93,42 @@ int main()
     );
     assert(result && "failed to create device");
 
+    /* acquire the actual queue */
     VkQueue queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, queue_fam_idx, 0, &queue);
 
-    /* create swapchain */
-    Rvk_Swapchain swapchain = {
-        .format    = r_choose_swapchain_format(physical_device, surface),
-        .extent    = r_suggest_swapchain_extent(physical_device, surface, WINDOW_WIDTH, WINDOW_HEIGHT),
-        .img_count = r_get_suggested_img_count(physical_device, surface),
-    };
+    Rvk_Swapchain swapchain = {0};
+    result = r_create_rvk_swapchain(physical_device, device, surface, WINDOW_WIDTH, WINDOW_HEIGHT, &swapchain);
 
-    result = vk_create_swapchain_khr(
+    /* perhaps at some point I could search for candidate formats, but hard code for now */
+    VkFormat depth_format =  VK_FORMAT_D32_SFLOAT;
+
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    result = r_create_render_pass(device, depth_format, swapchain.surface_format.format, &render_pass);
+    assert(result && "failed to create render pass");
+
+    VkImage depth_image = VK_NULL_HANDLE;
+    result = vk_create_image(
         device,
         NULL,
-        &swapchain.handle,
-        .surface = surface,
-        .minImageCount = swapchain.img_count,
-        .imageFormat = swapchain.format.format,
-        .imageColorSpace = swapchain.format.colorSpace,
-        .imageExtent = swapchain.extent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .clipped = VK_TRUE,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = r_choose_present_mode(physical_device, surface),
-        .preTransform = r_get_current_transform(physical_device, surface),
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        &depth_image,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = depth_format,
+        .extent = {swapchain.extent.width, swapchain.extent.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     );
 
-    assert(result && "failed to create swapchain");
-    result = RVK(vkGetSwapchainImagesKHR(device, swapchain.handle, &swapchain.img_count, NULL));
-    assert(swapchain.img_count <= RVK_MAX_SWAPCHAIN_IMAGES);
-    result = RVK(vkGetSwapchainImagesKHR(device, swapchain.handle, &swapchain.img_count, swapchain.imgs));
-    assert(result && "failed to populate swapchain images");
-
+    /* cleanup (mainly so that validation layers don't yell at us, realistically the OS cleans up anyway) */
+    vkDestroyImage(device, depth_image, NULL);
+    vkDestroyRenderPass(device, render_pass, NULL);
+    for (size_t i = 0; i < swapchain.image_count; i++)
+        vkDestroyImageView(device, swapchain.image_views[i], NULL);
     vkDestroySwapchainKHR(device, swapchain.handle, NULL);
     vkDestroyDevice(device, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);
