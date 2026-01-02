@@ -21,28 +21,29 @@ API Conventions:
 
     vk_*:
 
-        Thin wrapper macros that allow optional arguments for Vulkan functions which take a Vk*CreateInfo.
-        Aside from snake_case, there are only three main differences from the Vulkan-proper functions:
+        Thin wrapper macros named the same as to the Vulkan-proper functions, but snake_case.
+        They allow the members of Vk*Info structs to be treated as optional arguments.
+        Here are the main differences from the Vulkan-proper functions:
 
-            1) They have optional "." arguments for Vk*CreateInfo struct members,
+            1) They have optional "." arguments for Vk*Info struct members,
                e.g.
 
-                   vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 1);
-                                       ^      ^                 ^                         ^
-                                       |      |                 |                         |
-                                       +--+---+                 +------------+------------+
-                                          |                                  |
-                                  required arguments      optional arguments from VkInstanceCreateInfo;
-                                  are the pAllocator     if not set explicitly, then they will be
-                                (NULL is valid), and            implicitly zero initialized.
-                                    the pInstance
+               vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 1);
+                                   ^      ^                 ^                         ^
+                                   |      |                 |                         |
+                                   +--+---+                 +------------+------------+
+                                      |                                  |
+                              required arguments      optional arguments from VkInstanceCreateInfo;
+                              are the pAllocator     if not set explicitly, then they will be
+                            (NULL is valid), and            implicitly zero-initialized.
+                                the pInstance
 
-               Except for Vk*CreateInfo members which must now go last, The order of the parameters are
+               Except for Vk*Info struct members which must now go last, The order of the parameters are
                preserved from the Vulkan-proper function.
 
             2) Instead of returning a VkResult, they return true on VK_SUCCESS and false otherwise.
 
-            3) The ".sType" field in Vk*CreateInfo structs do not need to be set
+            3) The ".sType" field in Vk*Info structs do not need to be set
                e.g.
 
                vk_create_instance(
@@ -64,6 +65,7 @@ API Conventions:
                vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
 
                ***WARNING***: the exception to this rule is a structure in a pNext chain (i.e. linked list).
+
     RVK_*:
 
         defines/macros are prefixed with all caps "RVK_".
@@ -79,6 +81,15 @@ API Conventions:
 
         Rvk_Swapchain <--- custom structure for swapchain
         Rvk_Log_Level <--- the name of the enum for logging
+
+Other Notes:
+
+    * There are no vk_* macros for vulkan functions that do not pass in Vk*Info structs (e.g. vkDestroy* etc.)
+    * There is no vk_create_graphics_pipelines (with an "S"), because this passes a pointer to a list of
+      VkGraphicsPipelineCreateInfo structs, and this breaks the __VA_ARGS__ macro trick.
+      As a compromise there is "vk_create_graphics_pipeline" (without an "S"), which allows the
+      macro trick to work, but means you can only create one graphics pipeline at a time.
+    * avoid multithreading with r_default_* functions since they may contain static variables.
 
 */
 
@@ -97,17 +108,18 @@ API Conventions:
 #include <stdio.h>
 #include <stdbool.h>
 
-#define RVK_MAX_SWAPCHAIN_IMAGES 5
 typedef struct {
-    VkSwapchainKHR handle;
-    VkImage images[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkImageView image_views[RVK_MAX_SWAPCHAIN_IMAGES];
-    VkFramebuffer framebuffers[RVK_MAX_SWAPCHAIN_IMAGES];
-    uint32_t image_count;
-    bool resized;
-    VkSurfaceFormatKHR surface_format;
-    VkExtent2D extent;
-} Rvk_Swapchain;
+    float x, y, z;
+} Rvk_Vector3;
+
+typedef struct {
+    float x, y;
+} Rvk_Vector2;
+
+typedef struct {
+    Rvk_Vector2 position;
+    Rvk_Vector3 color;
+} Rvk_Simple_2D_Vertex;
 
 /***********************************************************************************
 *  r_* API declarations
@@ -142,6 +154,21 @@ VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfa
 /* create a basic render pass with color and depth attachments */
 bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass);
 
+#define RVK_MAX_SWAPCHAIN_IMAGES 5
+typedef struct {
+    VkSwapchainKHR handle;
+    VkImage images[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkImageView image_views[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer framebuffers[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkImage depth_image;
+    VkDeviceMemory depth_image_memory;
+    VkImageView depth_image_view;
+    uint32_t image_count;
+    bool resized;
+    VkSurfaceFormatKHR surface_format;
+    VkExtent2D extent;
+} Rvk_Swapchain;
+
 /* create a basic swapchain */
 bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain);
 
@@ -149,12 +176,38 @@ bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, V
  * for color you might try format = VK_FORMAT_R8G8B8A8_SRGB and flags =
  * VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
  * ...only suggestions */
-bool r_create_2d_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image);
+bool r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image);
 
 /* returns max unt32_t upon error */
 uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties);
 
 bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkImage image, VkDeviceMemory *memory);
+bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkBuffer buffer, VkDeviceMemory *memory);
+
+bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass);
+
+/* default state create info initializers for when you are creating pipelines */
+VkPipelineDepthStencilStateCreateInfo r_default_depth_stencil_state_ci();
+VkPipelineRasterizationStateCreateInfo r_default_rasterization_state_ci();
+VkPipelineMultisampleStateCreateInfo r_default_multisample_state_ci();
+VkPipelineViewportStateCreateInfo r_default_viewport_state_ci(VkExtent2D extent);
+VkPipelineInputAssemblyStateCreateInfo r_default_input_assembly_state_ci();
+VkPipelineVertexInputStateCreateInfo r_default_simple_2D_vertex_input_state_ci();
+VkPipelineColorBlendStateCreateInfo r_default_color_blend_state_ci();
+VkPipelineDynamicStateCreateInfo r_default_dynamic_state_ci();
+
+void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent);
+
+typedef struct {
+    size_t count;
+    VkDeviceMemory memory;
+    void *mapped;
+    VkDescriptorBufferInfo info;
+} Rvk_Buffer;
+
+void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffer idx_buff);
+bool r_upload_vertex_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
+bool r_upload_index_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -177,6 +230,30 @@ bool vk_create_render_pass_(VkDevice device, const VkAllocationCallbacks *pAlloc
 
 #define vk_create_image(device, pAllocator, pImage, ...) vk_create_image_(device, pAllocator, pImage, (VkImageCreateInfo){__VA_ARGS__})
 bool vk_create_image_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkImage *pImage, VkImageCreateInfo ci);
+
+#define vk_create_command_pool(device, pAllocator, pCommandPool, ...) vk_create_command_pool_(device, pAllocator, pCommandPool, (VkCommandPoolCreateInfo){__VA_ARGS__})
+bool vk_create_command_pool_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkCommandPool *pCommandPool, VkCommandPoolCreateInfo ci);
+
+#define vk_allocate_command_buffers(device, pCommandBuffers, ...) vk_allocate_command_buffers_(device, pCommandBuffers, (VkCommandBufferAllocateInfo){__VA_ARGS__})
+bool vk_allocate_command_buffers_(VkDevice device, VkCommandBuffer *pCommandBuffers, VkCommandBufferAllocateInfo ci);
+
+#define vk_create_semaphore(device, pAllocator, pSemaphore, ...) vk_create_semaphore_(device, pAllocator, pSemaphore, (VkSemaphoreCreateInfo){__VA_ARGS__})
+bool vk_create_semaphore_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkSemaphore *pSemaphore, VkSemaphoreCreateInfo ci);
+
+#define vk_create_fence(device, pAllocator, pFence, ...) vk_create_fence_(device, pAllocator, pFence, (VkFenceCreateInfo){__VA_ARGS__})
+bool vk_create_fence_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkFence *pFence, VkFenceCreateInfo ci);
+
+#define vk_create_pipeline_layout(device, pAllocator, pPipelineLayout, ...) vk_create_pipeline_layout_(device, pAllocator, pPipelineLayout, (VkPipelineLayoutCreateInfo){__VA_ARGS__})
+bool vk_create_pipeline_layout_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkPipelineLayout *pPipelineLayout, VkPipelineLayoutCreateInfo ci);
+
+#define vk_create_graphics_pipeline(device, pipelineCache, pAllocator, pPipeline, ...) vk_create_graphics_pipeline_(device, pipelineCache, pAllocator, pPipeline, (VkGraphicsPipelineCreateInfo){__VA_ARGS__})
+bool vk_create_graphics_pipeline_(VkDevice device, VkPipelineCache pipelineCache, const VkAllocationCallbacks *pAllocator, VkPipeline *pPipeline, VkGraphicsPipelineCreateInfo ci);
+
+#define vk_create_shader_module(device, pAllocator, pShaderModule, ...) vk_create_shader_module_(device, pAllocator, pShaderModule, (VkShaderModuleCreateInfo){__VA_ARGS__})
+bool vk_create_shader_module_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkShaderModule *pShaderModule, VkShaderModuleCreateInfo ci);
+
+#define vk_create_buffer(device, pAllocator, pBuffer, ...) vk_create_buffer_(device, pAllocator, pBuffer, (VkBufferCreateInfo){__VA_ARGS__})
+bool vk_create_buffer_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkBuffer *pBuffer, VkBufferCreateInfo ci);
 
 #endif // RVK_H_
 
@@ -556,98 +633,74 @@ bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
-    return vk_create_render_pass(
-        device,
-        NULL,
-        render_pass,
-        .attachmentCount = RVK_ARRAY_LEN(attachments),
-        .pAttachments = attachments,
-        .subpassCount = 1,
-        .pSubpasses = &subpass,
-        .dependencyCount = 1,
-        .pDependencies = &dependency,
-    );
+    return vk_create_render_pass(device, NULL, render_pass,
+                                 .attachmentCount = RVK_ARRAY_LEN(attachments),
+                                 .pAttachments = attachments,
+                                 .subpassCount = 1,
+                                 .pSubpasses = &subpass,
+                                 .dependencyCount = 1,
+                                 .pDependencies = &dependency);
 }
 
 bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain)
 {
-    bool result = true;
+    swapchain->surface_format = r_choose_swapchain_surface_format(physical_device, surface);
+    swapchain->extent         = r_suggest_swapchain_extent(physical_device, surface, width, height);
+    swapchain->image_count    = r_get_suggested_image_count(physical_device, surface);
 
-    swapchain->surface_format = r_choose_swapchain_surface_format(physical_device, surface),
-    swapchain->extent         = r_suggest_swapchain_extent(physical_device, surface, width, height),
-    swapchain->image_count    = r_get_suggested_image_count(physical_device, surface),
-
-    result = vk_create_swapchain_khr(
-        device,
-        NULL,
-        &swapchain->handle,
-        .surface = surface,
-        .minImageCount = swapchain->image_count, // only a suggestion not guaranteed
-        .imageFormat = swapchain->surface_format.format,
-        .imageColorSpace = swapchain->surface_format.colorSpace,
-        .imageExtent = swapchain->extent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .clipped = VK_TRUE,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = r_choose_present_mode(physical_device, surface),
-        .preTransform = r_get_current_transform(physical_device, surface),
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    );
-    if (!result) return false;
+    if (!vk_create_swapchain_khr(device, NULL, &swapchain->handle,
+                                 .surface = surface,
+                                 .minImageCount = swapchain->image_count, // only a suggestion not guaranteed
+                                 .imageFormat = swapchain->surface_format.format,
+                                 .imageColorSpace = swapchain->surface_format.colorSpace,
+                                 .imageExtent = swapchain->extent,
+                                 .imageArrayLayers = 1,
+                                 .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                 .clipped = VK_TRUE,
+                                 .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                                 .presentMode = r_choose_present_mode(physical_device, surface),
+                                 .preTransform = r_get_current_transform(physical_device, surface),
+                                 .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE)) return false;
 
     /* query ACTUAL image count */
-    result = RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, NULL));
-    if (!result) return false;
+    if (!RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, NULL))) return false;
     if (swapchain->image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
         r_log(RVK_ERROR, "swapchain RVK_MAX_SWAPCHAIN_IMAGES %zu was exceeded", RVK_MAX_SWAPCHAIN_IMAGES);
         return false;
     }
-    result = RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, swapchain->images));
-    if (!result) return false;
+    if (!RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count,
+                                     swapchain->images))) return false;
 
     /* create the image views for the swapchain */
     for (size_t i = 0; i < swapchain->image_count; i++) {
-        result = vk_create_image_view(
-            device,
-            NULL,
-            &swapchain->image_views[i],
-            .image = swapchain->images[i],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = swapchain->surface_format.format,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .levelCount = 1,
-                .layerCount = 1,
-            },
-        );
-        if (!result) {
-            r_log(RVK_ERROR, "failed to create image %zu", i);
-            return false;
-        }
+        if (!vk_create_image_view(device, NULL, &swapchain->image_views[i],
+                                  .image = swapchain->images[i],
+                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = swapchain->surface_format.format,
+                                  .subresourceRange = {
+                                      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                      .levelCount = 1,
+                                      .layerCount = 1,
+                                  })) return false;
     }
 
 
-    return result;
+    return true;
 }
 
-bool r_create_2d_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image)
-{
-    return vk_create_image(
-        device,
-        NULL,
-        image,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = format,
-        .extent = {extent.width, extent.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    );
+bool r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image)
+{ // TODO: since this is the simple "r_*" function, I feel like it should also allocate and bind_image_memory
+    return vk_create_image(device, NULL, image,
+                           .imageType = VK_IMAGE_TYPE_2D,
+                           .format = format,
+                           .extent = {extent.width, extent.height, 1},
+                           .mipLevels = 1,
+                           .arrayLayers = 1,
+                           .samples = VK_SAMPLE_COUNT_1_BIT,
+                           .tiling = VK_IMAGE_TILING_OPTIMAL,
+                           .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                           .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                           .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
 uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties)
@@ -690,6 +743,207 @@ bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice
     return result;
 }
 
+bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkBuffer buffer, VkDeviceMemory *memory)
+{
+    VkMemoryRequirements mem_reqs = {0};
+    vkGetBufferMemoryRequirements(device, buffer, &mem_reqs);
+    VkMemoryAllocateInfo alloc_ci = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+    };
+    alloc_ci.memoryTypeIndex = r_find_memory_type_index(
+        physical_device,
+        mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    );
+    if (alloc_ci.memoryTypeIndex == -1) {
+        r_log(RVK_ERROR, "memory not suitable based on requirements");
+        return false;
+    }
+    if (!RVK(vkAllocateMemory(device, &alloc_ci, NULL, memory))) return false;
+    if (!RVK(vkBindBufferMemory(device, buffer, *memory, 0))) return false;
+
+    return true;
+}
+
+bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass)
+{
+    bool result = true;
+
+    for (size_t i = 0; i < swapchain->image_count; i++) {
+        VkImageView attachments[] = {swapchain->image_views[i], swapchain->depth_image_view};
+        VkFramebufferCreateInfo framebuffer_ci = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = render_pass,
+            .attachmentCount = RVK_ARRAY_LEN(attachments),
+            .pAttachments = attachments,
+            .width  =  swapchain->extent.width,
+            .height = swapchain->extent.height,
+            .layers = 1,
+        };
+        result = RVK(vkCreateFramebuffer(device, &framebuffer_ci, NULL, &swapchain->framebuffers[i]));
+        if (!result) return false;
+    }
+
+    return result;
+}
+
+VkPipelineDepthStencilStateCreateInfo r_default_depth_stencil_state_ci()
+{
+    return (VkPipelineDepthStencilStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .maxDepthBounds = 1.0f,
+    };
+}
+
+VkPipelineRasterizationStateCreateInfo r_default_rasterization_state_ci()
+{
+    return (VkPipelineRasterizationStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_NONE,
+    };
+}
+
+VkPipelineMultisampleStateCreateInfo r_default_multisample_state_ci()
+{
+    return (VkPipelineMultisampleStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+}
+
+
+VkPipelineViewportStateCreateInfo r_default_viewport_state_ci(VkExtent2D extent)
+{
+    static VkViewport default_viewport_state = {0};
+    static VkRect2D default_scissor_state = {0};
+
+    default_viewport_state.width    = extent.width;
+    default_viewport_state.height   = extent.height;
+    default_viewport_state.maxDepth = 1.0f;
+    default_scissor_state.extent    = extent;
+    return (VkPipelineViewportStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &default_viewport_state,
+        .scissorCount = 1,
+        .pScissors = &default_scissor_state,
+    };
+}
+
+VkPipelineInputAssemblyStateCreateInfo r_default_input_assembly_state_ci()
+{
+    return (VkPipelineInputAssemblyStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    };
+}
+
+VkPipelineVertexInputStateCreateInfo r_default_simple_2D_vertex_input_state_ci()
+{
+    static VkVertexInputBindingDescription default_vertex_input_state = {
+        .binding   = 0,
+        .stride    = sizeof(Rvk_Simple_2D_Vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    static VkVertexInputAttributeDescription vert_attrs[] = {
+        { .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Rvk_Simple_2D_Vertex, position)},
+        { .location = 1, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(Rvk_Simple_2D_Vertex, color)},
+    };
+    return (VkPipelineVertexInputStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &default_vertex_input_state,
+        .vertexAttributeDescriptionCount = RVK_ARRAY_LEN(vert_attrs),
+        .pVertexAttributeDescriptions = vert_attrs,
+    };
+}
+
+VkPipelineColorBlendStateCreateInfo r_default_color_blend_state_ci()
+{
+    static VkPipelineColorBlendAttachmentState color_blend = {
+        .colorWriteMask = 0xf, // rgba
+        .blendEnable = VK_FALSE,
+    };
+    return (VkPipelineColorBlendStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend,
+        .logicOp = VK_LOGIC_OP_COPY,
+    };
+}
+
+VkPipelineDynamicStateCreateInfo r_default_dynamic_state_ci()
+{
+    static VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    return (VkPipelineDynamicStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = RVK_ARRAY_LEN(dynamic_states),
+        .pDynamicStates = dynamic_states,
+    };
+}
+
+void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent)
+{
+    VkViewport viewport = {
+        .width    = extent.width,
+        .height   = extent.height,
+        .maxDepth = 1.0f,
+    };
+    vkCmdSetViewport(cmd_buff, 0, 1, &viewport);
+    VkRect2D scissor = {.extent = extent};
+    vkCmdSetScissor(cmd_buff, 0, 1, &scissor);
+}
+
+void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffer idx_buff)
+{
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd_buff, 0, 1, &vtx_buff.info.buffer, offsets);
+    vkCmdBindIndexBuffer(cmd_buff, idx_buff.info.buffer, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(cmd_buff, idx_buff.count, 1, 0, 0, 0);
+}
+
+bool r_upload_vertex_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff)
+{
+    // void *mapped;
+
+    if (!vk_create_buffer(device, NULL, &buff->info.buffer,
+                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          .size = size)) return false;
+    if (!r_allocate_and_bind_buffer_memory(physical_device, device, buff->info.buffer, &buff->memory)) return false;
+
+    /* create a staging buffer */
+    Rvk_Buffer stg_buff = {0};
+    if (!vk_create_buffer(device, NULL, &stg_buff.info.buffer,
+                          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          .size = size)) return false;
+    if (!r_allocate_and_bind_buffer_memory(physical_device, device, stg_buff.info.buffer, &stg_buff.memory)) return false;
+
+    if (!RVK(vkMapMemory(device, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return false;
+    memcpy(stg_buff.mapped, data, size);
+    vkUnmapMemory(device, stg_buff.memory);
+
+    /* transfer data from staging buffer to vertex buffer */
+    // rvk_buff_copy(buff, stg_buff, 0);
+    // rvk_buff_destroy(stg_buff);
+
+    /* book keeping */
+    buff->info.range = size;
+    buff->count = count;
+
+    return buff;
+}
+
+bool r_upload_index_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff)
+{
+
+}
+
 /***********************************************************************************
 *  vk_* API implementation
 ************************************************************************************/
@@ -698,7 +952,6 @@ bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pI
 {
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     if (ci.pApplicationInfo) {
-        /* bypass the const */
         VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pApplicationInfo;
         base->sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     }
@@ -711,11 +964,8 @@ bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallb
     ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 
     for (uint32_t i = 0; i < ci.queueCreateInfoCount; i++) {
-        if (ci.pQueueCreateInfos[i].sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) {
-            /* bypass the const */
-            VkBaseOutStructure *base = (VkBaseOutStructure *)&ci.pQueueCreateInfos[i];
-            base->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        }
+        VkBaseOutStructure *base = (VkBaseOutStructure *)&ci.pQueueCreateInfos[i];
+        base->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     }
 
     return RVK(vkCreateDevice(physical_device, &ci, pAllocator, pDevice));
@@ -743,6 +993,105 @@ bool vk_create_image_(VkDevice device, const VkAllocationCallbacks *pAllocator, 
 {
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     return RVK(vkCreateImage(device, &ci, pAllocator, pImage));
+}
+
+bool vk_create_command_pool_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkCommandPool *pCommandPool, VkCommandPoolCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    return RVK(vkCreateCommandPool(device, &ci, pAllocator, pCommandPool));
+}
+
+bool vk_allocate_command_buffers_(VkDevice device, VkCommandBuffer *pCommandBuffers, VkCommandBufferAllocateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    return RVK(vkAllocateCommandBuffers(device, &ci, pCommandBuffers));
+}
+
+bool vk_create_semaphore_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkSemaphore *pSemaphore, VkSemaphoreCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    return RVK(vkCreateSemaphore(device, &ci, pAllocator, pSemaphore));
+}
+
+bool vk_create_fence_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkFence *pFence, VkFenceCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    return RVK(vkCreateFence(device, &ci, pAllocator, pFence));
+}
+
+bool vk_create_pipeline_layout_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkPipelineLayout *pPipelineLayout, VkPipelineLayoutCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    return RVK(vkCreatePipelineLayout(device, &ci, pAllocator, pPipelineLayout));
+}
+
+bool vk_create_graphics_pipeline_(VkDevice device, VkPipelineCache pipelineCache, const VkAllocationCallbacks *pAllocator, VkPipeline *pPipeline, VkGraphicsPipelineCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+
+    for (uint32_t i = 0; i < ci.stageCount; i++) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)&ci.pStages[i];
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    }
+
+    if (ci.pVertexInputState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pVertexInputState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    }
+
+    if (ci.pInputAssemblyState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pInputAssemblyState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    }
+
+    if (ci.pTessellationState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pTessellationState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    }
+
+    if (ci.pViewportState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pViewportState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    }
+
+    if (ci.pRasterizationState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pRasterizationState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    }
+
+    if (ci.pMultisampleState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pMultisampleState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    }
+
+    if (ci.pDepthStencilState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pDepthStencilState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    }
+
+    if (ci.pColorBlendState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pColorBlendState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    }
+
+    if (ci.pDynamicState) {
+        VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pDynamicState;
+        base->sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    }
+
+    return RVK(vkCreateGraphicsPipelines(device, pipelineCache, 1, &ci, pAllocator, pPipeline));
+}
+
+bool vk_create_shader_module_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkShaderModule *pShaderModule, VkShaderModuleCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    return RVK(vkCreateShaderModule(device, &ci, pAllocator, pShaderModule));
+}
+
+bool vk_create_buffer_(VkDevice device, const VkAllocationCallbacks *pAllocator, VkBuffer *pBuffer, VkBufferCreateInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    return RVK(vkCreateBuffer(device, &ci, pAllocator, pBuffer));
 }
 
 #endif // RVK_IMPLEMENTATION
