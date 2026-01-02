@@ -93,39 +93,37 @@ int main()
     );
     assert(result && "failed to create device");
 
-    /* acquire the actual queue */
+    /* acquire the queue */
     VkQueue queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, queue_fam_idx, 0, &queue);
 
+    /* create swapchain */
     Rvk_Swapchain swapchain = {0};
     result = r_create_rvk_swapchain(physical_device, device, surface, WINDOW_WIDTH, WINDOW_HEIGHT, &swapchain);
+    assert(result && "failed to create Rvk_Swapchain");
 
-    /* perhaps at some point I could search for candidate formats, but hard code for now */
+    /* create renderpass */
     VkFormat depth_format =  VK_FORMAT_D32_SFLOAT;
-
     VkRenderPass render_pass = VK_NULL_HANDLE;
     result = r_create_render_pass(device, depth_format, swapchain.surface_format.format, &render_pass);
     assert(result && "failed to create render pass");
 
     VkImage depth_image = VK_NULL_HANDLE;
-    result = vk_create_image(
+    VkDeviceMemory depth_image_memory = VK_NULL_HANDLE;
+    result = r_create_2d_image(
         device,
-        NULL,
-        &depth_image,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = depth_format,
-        .extent = {swapchain.extent.width, swapchain.extent.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        depth_format,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        swapchain.extent,
+        &depth_image
     );
+    assert(result && "failed to create depth image");
+    result = r_allocate_and_bind_image_memory(physical_device, device, depth_image, &depth_image_memory);
+    assert(result && "failed to allocate and bind image memory");
 
     /* cleanup (mainly so that validation layers don't yell at us, realistically the OS cleans up anyway) */
     vkDestroyImage(device, depth_image, NULL);
+    vkFreeMemory(device, depth_image_memory, NULL);
     vkDestroyRenderPass(device, render_pass, NULL);
     for (size_t i = 0; i < swapchain.image_count; i++)
         vkDestroyImageView(device, swapchain.image_views[i], NULL);

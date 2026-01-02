@@ -13,49 +13,77 @@ Usage:
         // TODO:
     }
 
-Basics of the API:
+API Conventions:
     r_*:
 
-        the functions beginning with "r_" are helper/lazy functions. These are considered low mileage,
-        they are good for fast prototyping, but if you need to be more explicit then use vk_*.
+        The functions beginning with "r_" are helper/lazy functions.
+        Meant for quick prototyping, but if you need to be more explicit then use vk_*.
 
     vk_*:
 
-        Thin wrapper macros which allow optional arguments for Vulkan functions e.g.:
+        Thin wrapper macros that allow optional arguments for Vulkan functions which take a Vk*CreateInfo.
+        Aside from snake_case, there are only three main differences from the Vulkan-proper functions:
 
-            vk_create_instance(NULL, &inst);
-            vk_create_instance(&allocator, &inst);
-            vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
-            vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 1);
+            1) They have optional "." arguments for Vk*CreateInfo struct members,
+               e.g.
 
-        Note that the optional arguments are for create infos only, and must go last do to the variadic macro.
+                   vk_create_instance(NULL, &inst, .ppEnabledLayerNames = layers, .enabledLayerCount = 1);
+                                       ^      ^                 ^                         ^
+                                       |      |                 |                         |
+                                       +--+---+                 +------------+------------+
+                                          |                                  |
+                                  required arguments      optional arguments from VkInstanceCreateInfo;
+                                  are the pAllocator     if not set explicitly, then they will be
+                                (NULL is valid), and            implicitly zero initialized.
+                                    the pInstance
 
-        sTypes do not need to be specified because they are set internally e.g.:
+               Except for Vk*CreateInfo members which must now go last, The order of the parameters are
+               preserved from the Vulkan-proper function.
 
-            vk_create_instance(NULL, &inst);
+            2) Instead of returning a VkResult, they return true on VK_SUCCESS and false otherwise.
 
-        is the same as:
+            3) The ".sType" field in Vk*CreateInfo structs do not need to be set
+               e.g.
 
-            vk_create_instance(NULL, &inst, .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+               vk_create_instance(
+                   NULL,
+                   &inst,
+                   .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO <--- unnecessary, can be left out
+                );
 
-        ***WARNING*** the exception to this is when pNext points to a structure with an sType.
+               ALSO,
 
-    RVK/Rvk:
+               VkApplicationInfo app_info = {
+                   .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, <--- unnecessary, can be left out
+                   .pApplicationName = APP_NAME,
+                   .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
+                   .pEngineName = "Cool Vulkan Renderer",
+                   .engineVersion = VK_MAKE_VERSION(0, 0, 1),
+                   .apiVersion = VK_API_VERSION_1_3,
+               };
+               vk_create_instance(NULL, &inst, .pApplicationInfo = &app_info);
 
-        defines/macros are prefixed with RVK_, while custom types are prefixed with Rvk_
+               ***WARNING***: the exception to this rule is a structure in a pNext chain (i.e. linked list).
+    RVK_*:
+
+        defines/macros are prefixed with all caps "RVK_".
+        e.g.
+
+        RVK_INFO <--- log level
+        RVK_IMPLEMENTATION <--- #define
+
+    Rvk_*:
+
+        typedefed structures/enums are prefixed with "Rvk_"
+        e.g.
+
+        Rvk_Swapchain <--- custom structure for swapchain
+        Rvk_Log_Level <--- the name of the enum for logging
 
 */
 
 #ifndef RVK_H_
 #define RVK_H_
-
-#define RVK_ASSERT assert
-#define RVK_REALLOC realloc
-#define RVK_FREE free
-
-#ifndef RVK_EXIT_APP
-#define RVK_EXIT_APP
-#endif
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -68,15 +96,6 @@ Basics of the API:
 #include <errno.h>
 #include <stdio.h>
 #include <stdbool.h>
-
-// #ifdef PLATFORM_DESKTOP_GLFW
-// #include <GLFW/glfw3.h>
-// #endif
-//
-// #ifdef PLATFORM_ANDROID
-// #include <android_native_app_glue.h>
-// #include <android/log.h>
-// #endif
 
 #define RVK_MAX_SWAPCHAIN_IMAGES 5
 typedef struct {
@@ -104,6 +123,8 @@ VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info();
 
 bool r_instance_layers_supported(const char **requested_layers, uint32_t requested_layer_count);
 bool r_instance_extensions_supported(const char **requested_extensions, uint32_t requested_extension_count);
+
+/* tries to prefer discrete GPUs, set log level to RVK_INFO for more info */
 VkPhysicalDevice r_pick_physical_device(VkInstance instance);
 
 /* returns max unt32_t upon error, surface == NULL means we don't care about present support */
@@ -112,13 +133,28 @@ uint32_t r_find_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surf
 VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 uint32_t r_get_suggested_image_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 uint32_t r_get_current_transform(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+
+/* unlikely, but possible to return extent thats not the same as width and height */
 VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfaceKHR surface, int width, int height);
+
 VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 
 /* create a basic render pass with color and depth attachments */
 bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass);
 
+/* create a basic swapchain */
 bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain);
+
+/* for depth ,you might try format = VK_FORMAT_D32_SFLOAT and flags = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+ * for color you might try format = VK_FORMAT_R8G8B8A8_SRGB and flags =
+ * VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
+ * ...only suggestions */
+bool r_create_2d_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image);
+
+/* returns max unt32_t upon error */
+uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties);
+
+bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkImage image, VkDeviceMemory *memory);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -201,7 +237,6 @@ void r_log(Rvk_Log_Level level, const char *fmt, ...)
         fprintf(stderr, "[RVK][ERROR] ");
         break;
     default:
-        RVK_EXIT_APP;
     }
 
     va_list args;
@@ -547,7 +582,7 @@ bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, V
         NULL,
         &swapchain->handle,
         .surface = surface,
-        .minImageCount = swapchain->image_count, // this is technically only a suggestion
+        .minImageCount = swapchain->image_count, // only a suggestion not guaranteed
         .imageFormat = swapchain->surface_format.format,
         .imageColorSpace = swapchain->surface_format.colorSpace,
         .imageExtent = swapchain->extent,
@@ -561,7 +596,7 @@ bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, V
     );
     if (!result) return false;
 
-    /* */
+    /* query ACTUAL image count */
     result = RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, NULL));
     if (!result) return false;
     if (swapchain->image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
@@ -596,6 +631,65 @@ bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, V
     return result;
 }
 
+bool r_create_2d_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image)
+{
+    return vk_create_image(
+        device,
+        NULL,
+        image,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = format,
+        .extent = {extent.width, extent.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    );
+}
+
+uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties mem_properites = {0};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properites);
+    for (uint32_t i = 0; i < mem_properites.memoryTypeCount; i++) {
+        if (type & (1 << i) && (mem_properites.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkImage image, VkDeviceMemory *memory)
+{
+    bool result = true;
+
+    VkMemoryRequirements mem_reqs = {0};
+    vkGetImageMemoryRequirements(device, image, &mem_reqs);
+    VkMemoryAllocateInfo alloc_ci = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+    };
+    alloc_ci.memoryTypeIndex = r_find_memory_type_index(
+        physical_device,
+        mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    );
+    if (alloc_ci.memoryTypeIndex == -1) {
+        r_log(RVK_ERROR, "memory not suitable based on requirements");
+        return false;
+    }
+    result = RVK(vkAllocateMemory(device, &alloc_ci, NULL, memory));
+    if (!result) return false;
+    result = RVK(vkBindImageMemory(device, image, *memory, 0));
+    if (!result) return false;
+
+    return result;
+}
+
 /***********************************************************************************
 *  vk_* API implementation
 ************************************************************************************/
@@ -604,6 +698,7 @@ bool vk_create_instance_(const VkAllocationCallbacks *pAllocator, VkInstance* pI
 {
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     if (ci.pApplicationInfo) {
+        /* bypass the const */
         VkBaseOutStructure *base = (VkBaseOutStructure *)ci.pApplicationInfo;
         base->sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     }
@@ -617,6 +712,7 @@ bool vk_create_device_(VkPhysicalDevice physical_device, const VkAllocationCallb
 
     for (uint32_t i = 0; i < ci.queueCreateInfoCount; i++) {
         if (ci.pQueueCreateInfos[i].sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) {
+            /* bypass the const */
             VkBaseOutStructure *base = (VkBaseOutStructure *)&ci.pQueueCreateInfos[i];
             base->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         }
