@@ -113,7 +113,9 @@ int main()
     /* TODO_BEGIN: this should probably go in r_create_rvk_swapchain */
     if (!r_create_2D_image(device, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                            swapchain.extent, &swapchain.depth_image)) return 1;
-    if (!r_allocate_and_bind_image_memory(physical_device, device, swapchain.depth_image,
+    if (!r_allocate_and_bind_image_memory(physical_device, device,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                          swapchain.depth_image,
                                           &swapchain.depth_image_memory)) return 1;
     if (!vk_create_image_view(device, NULL, &swapchain.depth_image_view,
                               .image = swapchain.depth_image,
@@ -192,8 +194,8 @@ int main()
     /* game loop */
     int esc = 0;
     do {
-        vkCmdBindPipeline(cmd_buff, 0, triangle.pipeline);
-        r_cmd_set_viewport_scissor(cmd_buff, swapchain.extent);
+        // vkCmdBindPipeline(cmd_buff, 0, triangle.pipeline);
+        // r_cmd_set_viewport_scissor(cmd_buff, swapchain.extent);
 
         glfwPollEvents();
         esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;

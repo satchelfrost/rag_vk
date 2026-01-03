@@ -181,8 +181,8 @@ bool r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags
 /* returns max unt32_t upon error */
 uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties);
 
-bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkImage image, VkDeviceMemory *memory);
-bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkBuffer buffer, VkDeviceMemory *memory);
+bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkImage image, VkDeviceMemory *memory);
+bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkBuffer buffer, VkDeviceMemory *memory);
 
 bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass);
 
@@ -199,15 +199,19 @@ VkPipelineDynamicStateCreateInfo r_default_dynamic_state_ci();
 void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent);
 
 typedef struct {
-    size_t count;
+    VkDescriptorBufferInfo info;
     VkDeviceMemory memory;
     void *mapped;
-    VkDescriptorBufferInfo info;
 } Rvk_Buffer;
 
+typedef struct {
+    VkPhysicalDevice physical;
+    VkDevice logical;
+} Rvk_Device;
+
 void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffer idx_buff);
-bool r_upload_vertex_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
-bool r_upload_index_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
+Rvk_Buffer r_create_and_upload_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data);
+bool r_upload_index_buffer(Rvk_device device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -716,7 +720,7 @@ uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t typ
     return -1;
 }
 
-bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkImage image, VkDeviceMemory *memory)
+bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkImage image, VkDeviceMemory *memory)
 {
     bool result = true;
 
@@ -729,7 +733,7 @@ bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice
     alloc_ci.memoryTypeIndex = r_find_memory_type_index(
         physical_device,
         mem_reqs.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        mem_props
     );
     if (alloc_ci.memoryTypeIndex == -1) {
         r_log(RVK_ERROR, "memory not suitable based on requirements");
@@ -743,7 +747,7 @@ bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice
     return result;
 }
 
-bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkBuffer buffer, VkDeviceMemory *memory)
+bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkBuffer buffer, VkDeviceMemory *memory)
 {
     VkMemoryRequirements mem_reqs = {0};
     vkGetBufferMemoryRequirements(device, buffer, &mem_reqs);
@@ -754,7 +758,7 @@ bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevic
     alloc_ci.memoryTypeIndex = r_find_memory_type_index(
         physical_device,
         mem_reqs.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        mem_props
     );
     if (alloc_ci.memoryTypeIndex == -1) {
         r_log(RVK_ERROR, "memory not suitable based on requirements");
@@ -908,33 +912,40 @@ void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffe
     vkCmdDrawIndexed(cmd_buff, idx_buff.count, 1, 0, 0, 0);
 }
 
-bool r_upload_vertex_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff)
+bool r_upload_vertex_buffer(Rvk_Device device, Rvk_Vertices vertices, Rvk_Buffer *buff)
 {
-    // void *mapped;
+    /* book keeping */
+    buff->info.range = size;
 
+    /* create a buffer */
     if (!vk_create_buffer(device, NULL, &buff->info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                           .size = size)) return false;
-    if (!r_allocate_and_bind_buffer_memory(physical_device, device, buff->info.buffer, &buff->memory)) return false;
+    if (!r_allocate_and_bind_buffer_memory(physical_device,
+                                           device,
+                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                           buff->info.buffer,
+                                           &buff->memory)) return false;
 
     /* create a staging buffer */
     Rvk_Buffer stg_buff = {0};
     if (!vk_create_buffer(device, NULL, &stg_buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           .size = size)) return false;
-    if (!r_allocate_and_bind_buffer_memory(physical_device, device, stg_buff.info.buffer, &stg_buff.memory)) return false;
+    if (!r_allocate_and_bind_buffer_memory(physical_device,
+                                           device,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                           stg_buff.info.buffer,
+                                           &stg_buff.memory)) return false;
 
+    /* copy data to staging buffer */
     if (!RVK(vkMapMemory(device, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return false;
     memcpy(stg_buff.mapped, data, size);
     vkUnmapMemory(device, stg_buff.memory);
 
-    /* transfer data from staging buffer to vertex buffer */
+    /* transfer staging buffer to vertex buffer */
     // rvk_buff_copy(buff, stg_buff, 0);
     // rvk_buff_destroy(stg_buff);
-
-    /* book keeping */
-    buff->info.range = size;
-    buff->count = count;
 
     return buff;
 }
