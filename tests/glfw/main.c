@@ -38,10 +38,10 @@ Rvk_Simple_2D_Vertex vertices[] = {
 
 uint16_t indices[] = {0, 1, 2};
 
-typedef struct {
+static struct {
     VkPipelineLayout pipeline_layout;
     VkPipeline pipeline;
-} Pipeline;
+} triangle = {0};
 
 // TODO: create a lazy context
 int main()
@@ -67,28 +67,27 @@ int main()
     if (!RVK(glfwCreateWindowSurface(instance, window, NULL, &surface))) return 1;
 
     /* pick physical device (tries to prefer discrete GPU) */
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    if (!(physical_device = r_pick_physical_device(instance))) return 1;
+    Rvk_Device device = { .physical = VK_NULL_HANDLE, .logical = VK_NULL_HANDLE };
+    if (!(device.physical = r_pick_physical_device(instance))) return 1;
 
     /* find a queue family with graphics & present support.
      * if we don't care about present support set surface = NULL.
      * if we want a queue family with compute and graphics set flags e.g.:
      *     VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT */
-    uint32_t queue_fam_idx = r_find_queue_family(physical_device, surface, VK_QUEUE_GRAPHICS_BIT);
-    if (queue_fam_idx == -1) {
+    device.queue_family_index = r_find_queue_family(device.physical, surface, VK_QUEUE_GRAPHICS_BIT);
+    if (device.queue_family_index == -1) {
         r_log(RVK_ERROR, "failed to find sufficient queue family");
         return 1;
     }
 
     /* create a device with the queue family index and physical device we picked */
-    VkDevice device = VK_NULL_HANDLE;
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queue_ci = {
-        .queueFamilyIndex = queue_fam_idx,
+        .queueFamilyIndex = device.queue_family_index,
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
-    if (!vk_create_device(physical_device, NULL, &device,
+    if (!vk_create_device(device.physical, NULL, &device.logical,
                           .pQueueCreateInfos = &queue_ci,
                           .queueCreateInfoCount = 1,
                           .enabledExtensionCount = ARRAY_LEN(device_exts),
@@ -97,27 +96,26 @@ int main()
                           .enabledLayerCount = ARRAY_LEN(layers))) return 1;
 
     /* acquire the queue */
-    VkQueue queue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(device, queue_fam_idx, 0, &queue);
-    if (!queue) return 1;
+    vkGetDeviceQueue(device.logical, device.queue_family_index, 0, &device.queue);
+    if (!device.queue) return 1;
 
     /* create swapchain */
-    Rvk_Swapchain swapchain = {0};
-    if (!r_create_rvk_swapchain(physical_device, device, surface, WINDOW_WIDTH, WINDOW_HEIGHT, &swapchain)) return 1;
+    Rvk_Swapchain swapchain = r_create_rvk_swapchain(device, surface, WINDOW_WIDTH, WINDOW_HEIGHT);
+    if (!swapchain.handle) return 1;
 
     /* create renderpass */
     VkFormat depth_format =  VK_FORMAT_D32_SFLOAT;
     VkRenderPass render_pass = VK_NULL_HANDLE;
-    if (!r_create_render_pass(device, depth_format, swapchain.surface_format.format, &render_pass)) return 1;
+    if (!(render_pass = r_create_render_pass(device.logical, depth_format, swapchain.surface_format.format))) return 1;
 
     /* TODO_BEGIN: this should probably go in r_create_rvk_swapchain */
-    if (!r_create_2D_image(device, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                           swapchain.extent, &swapchain.depth_image)) return 1;
-    if (!r_allocate_and_bind_image_memory(physical_device, device,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                          swapchain.depth_image,
-                                          &swapchain.depth_image_memory)) return 1;
-    if (!vk_create_image_view(device, NULL, &swapchain.depth_image_view,
+    if (!(swapchain.depth_image = r_create_2D_image(device.logical, depth_format,
+                                                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                                    swapchain.extent))) return 1;
+    if (!(swapchain.depth_image_memory = r_allocate_and_bind_image_memory(device,
+                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                                          swapchain.depth_image))) return 1;
+    if (!vk_create_image_view(device.logical, NULL, &swapchain.depth_image_view,
                               .image = swapchain.depth_image,
                               .viewType = VK_IMAGE_VIEW_TYPE_2D,
                               .format = depth_format,
@@ -126,29 +124,25 @@ int main()
                                   .levelCount = 1, .layerCount = 1,
                               })) return 1;
 
-    if (!r_init_framebuffers(device, &swapchain, render_pass)) return 1;
+    if (!r_init_framebuffers(device.logical, &swapchain, render_pass)) return 1;
     /* TODO_END */
 
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    if (!vk_create_command_pool(device, NULL, &command_pool,
+    if (!vk_create_command_pool(device.logical, NULL, &device.command_pool,
                                 .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                .queueFamilyIndex = queue_fam_idx)) return 1;
+                                .queueFamilyIndex = device.queue_family_index)) return 1;
 
-    VkCommandBuffer cmd_buff = VK_NULL_HANDLE;
-    if (!vk_allocate_command_buffers(device, &cmd_buff,
-                                     .commandPool = command_pool,
+    if (!vk_allocate_command_buffers(device.logical, device.cmd_buffs,
+                                     .commandPool = device.command_pool,
                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                     .commandBufferCount = 1)) return 1;
+                                     .commandBufferCount = RVK_MAX_FRAMES_IN_FLIGHT)) return 1;
 
-    VkSemaphore image_available = VK_NULL_HANDLE;
-    VkSemaphore render_finished = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    if (!vk_create_semaphore(device, NULL, &image_available)) return 1;
-    if (!vk_create_semaphore(device, NULL, &render_finished)) return 1;
-    if (!vk_create_fence(device, NULL, &fence, .flags = VK_FENCE_CREATE_SIGNALED_BIT)) return 1;
+    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
+        if (!vk_create_semaphore(device.logical, NULL, &device.image_available_sems[i])) return 1;
+        if (!vk_create_semaphore(device.logical, NULL, &device.render_finished_sems[i])) return 1;
+        if (!vk_create_fence(device.logical, NULL, &device.fences[i], .flags = VK_FENCE_CREATE_SIGNALED_BIT)) return 1;
+    }
 
-    Pipeline triangle = {0};
-    if (!vk_create_pipeline_layout(device, NULL, &triangle.pipeline_layout)) return 1;
+    if (!vk_create_pipeline_layout(device.logical, NULL, &triangle.pipeline_layout)) return 1;
 
     VkPipelineShaderStageCreateInfo stages[] = {
         {.stage = VK_SHADER_STAGE_VERTEX_BIT,   .pName = "main"},
@@ -157,11 +151,11 @@ int main()
 
     String_Builder sb = {0};
     if (!read_entire_file("shaders/triangle.vert.glsl.spv", &sb)) return 1;
-    if (!vk_create_shader_module(device, NULL, &stages[0].module,
+    if (!vk_create_shader_module(device.logical, NULL, &stages[0].module,
                                  .codeSize = sb.count, .pCode = (uint32_t *)sb.items)) return 1;
     sb.count = 0; // reuse memory
     if (!read_entire_file("shaders/triangle.frag.glsl.spv", &sb)) return 1;
-    if (!vk_create_shader_module(device, NULL, &stages[1].module,
+    if (!vk_create_shader_module(device.logical, NULL, &stages[1].module,
                                  .codeSize = sb.count, .pCode = (uint32_t *)sb.items)) return 1;
     sb.count = 0; // reuse memory
 
@@ -174,7 +168,7 @@ int main()
     VkPipelineColorBlendStateCreateInfo color_blend_state_ci = r_default_color_blend_state_ci();
     VkPipelineDynamicStateCreateInfo dynamic_state_ci = r_default_dynamic_state_ci();
 
-    if (!vk_create_graphics_pipeline(device, NULL, NULL, &triangle.pipeline,
+    if (!vk_create_graphics_pipeline(device.logical, NULL, NULL, &triangle.pipeline,
                                      .stageCount = ARRAY_LEN(stages),
                                      .pStages = stages,
                                      .pVertexInputState = &vertex_input_state_ci,
@@ -188,8 +182,8 @@ int main()
                                      .layout = triangle.pipeline_layout,
                                      .renderPass = render_pass)) return 1;
 
-    vkDestroyShaderModule(device, stages[0].module, NULL);
-    vkDestroyShaderModule(device, stages[1].module, NULL);
+    vkDestroyShaderModule(device.logical, stages[0].module, NULL);
+    vkDestroyShaderModule(device.logical, stages[1].module, NULL);
 
     /* game loop */
     int esc = 0;
@@ -202,23 +196,25 @@ int main()
     } while (!esc && !glfwWindowShouldClose(window));
 
     /* cleanup (mainly so that validation layers don't yell at us, realistically the OS cleans up anyway) */
-    vkDestroyPipeline(device, triangle.pipeline, NULL);
-    vkDestroyPipelineLayout(device, triangle.pipeline_layout, NULL);
-    vkDestroyFence(device, fence, NULL);
-    vkDestroySemaphore(device, image_available, NULL);
-    vkDestroySemaphore(device, render_finished, NULL);
-    vkFreeCommandBuffers(device, command_pool, 1, &cmd_buff);
-    vkDestroyCommandPool(device, command_pool, NULL);
+    vkDestroyPipeline(device.logical, triangle.pipeline, NULL);
+    vkDestroyPipelineLayout(device.logical, triangle.pipeline_layout, NULL);
+    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroyFence(device.logical, device.fences[i], NULL);
+        vkDestroySemaphore(device.logical, device.image_available_sems[i], NULL);
+        vkDestroySemaphore(device.logical, device.render_finished_sems[i], NULL);
+    }
+    vkFreeCommandBuffers(device.logical, device.command_pool, RVK_MAX_FRAMES_IN_FLIGHT, device.cmd_buffs);
+    vkDestroyCommandPool(device.logical, device.command_pool, NULL);
     for (size_t i = 0; i < swapchain.image_count; i++)
-        vkDestroyFramebuffer(device, swapchain.framebuffers[i], NULL);
-    vkDestroyImageView(device, swapchain.depth_image_view, NULL);
-    vkDestroyImage(device, swapchain.depth_image, NULL);
-    vkFreeMemory(device, swapchain.depth_image_memory, NULL);
-    vkDestroyRenderPass(device, render_pass, NULL);
+        vkDestroyFramebuffer(device.logical, swapchain.framebuffers[i], NULL);
+    vkDestroyImageView(device.logical, swapchain.depth_image_view, NULL);
+    vkDestroyImage(device.logical, swapchain.depth_image, NULL);
+    vkFreeMemory(device.logical, swapchain.depth_image_memory, NULL);
+    vkDestroyRenderPass(device.logical, render_pass, NULL);
     for (size_t i = 0; i < swapchain.image_count; i++)
-        vkDestroyImageView(device, swapchain.image_views[i], NULL);
-    vkDestroySwapchainKHR(device, swapchain.handle, NULL);
-    vkDestroyDevice(device, NULL);
+        vkDestroyImageView(device.logical, swapchain.image_views[i], NULL);
+    vkDestroySwapchainKHR(device.logical, swapchain.handle, NULL);
+    vkDestroyDevice(device.logical, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);
     vkDestroyInstance(instance, NULL);
 

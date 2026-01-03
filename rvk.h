@@ -84,12 +84,21 @@ API Conventions:
 
 Other Notes:
 
-    * There are no vk_* macros for vulkan functions that do not pass in Vk*Info structs (e.g. vkDestroy* etc.)
-    * There is no vk_create_graphics_pipelines (with an "S"), because this passes a pointer to a list of
+    * There are no vk_* macros for Vulkan functions that do not pass in Vk*Info structs (e.g. vkDestroy* etc.)
+    * There is no vk_create_graphics_pipelines (with an "s"), because this passes a pointer to a list of
       VkGraphicsPipelineCreateInfo structs, and this breaks the __VA_ARGS__ macro trick.
       As a compromise there is "vk_create_graphics_pipeline" (without an "S"), which allows the
       macro trick to work, but means you can only create one graphics pipeline at a time.
-    * avoid multithreading with r_default_* functions since they may contain static variables.
+    * avoid multithreading with r_default_* functions since they MAY contain static variables.
+      In the future, I may create thread safe versions, but for now I'm not worried about it.
+
+      TODO:
+    * Currently, some of the r_create_* methods MAY leak memory if they fail. In practice,
+      this probably wouldn't matter because if they do fail they log failure messages,
+      and you will see these messages and prevent them from happening. Technically, though it is
+      possible, and what I probably should be doing is using an arena, and upon failure resetting
+      to some save point at the beginning of the function call. For now I'm not worried, but at some
+      point this could cause issues.
 
 */
 
@@ -152,7 +161,7 @@ VkExtent2D r_suggest_swapchain_extent(VkPhysicalDevice physical_device, VkSurfac
 VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 
 /* create a basic render pass with color and depth attachments */
-bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass);
+VkRenderPass r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format);
 
 #define RVK_MAX_SWAPCHAIN_IMAGES 5
 typedef struct {
@@ -169,20 +178,33 @@ typedef struct {
     VkExtent2D extent;
 } Rvk_Swapchain;
 
+#define RVK_MAX_FRAMES_IN_FLIGHT 2
+typedef struct {
+    VkPhysicalDevice physical;
+    VkDevice logical;
+    uint32_t queue_family_index;
+    VkQueue queue;
+    VkCommandPool command_pool;
+    VkSemaphore image_available_sems[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_finished_sems[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkFence fences[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkCommandBuffer cmd_buffs[RVK_MAX_FRAMES_IN_FLIGHT];
+} Rvk_Device;
+
 /* create a basic swapchain */
-bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain);
+Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, int width, int height);
 
 /* for depth ,you might try format = VK_FORMAT_D32_SFLOAT and flags = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
  * for color you might try format = VK_FORMAT_R8G8B8A8_SRGB and flags =
  * VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
  * ...only suggestions */
-bool r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image);
+VkImage r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent);
 
 /* returns max unt32_t upon error */
 uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties);
 
-bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkImage image, VkDeviceMemory *memory);
-bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkBuffer buffer, VkDeviceMemory *memory);
+VkDeviceMemory r_allocate_and_bind_image_memory(Rvk_Device device, VkMemoryPropertyFlags mem_props, VkImage image);
+VkDeviceMemory r_allocate_and_bind_buffer_memory(Rvk_Device device, VkMemoryPropertyFlags mem_props, VkBuffer buffer);
 
 bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass);
 
@@ -204,14 +226,17 @@ typedef struct {
     void *mapped;
 } Rvk_Buffer;
 
-typedef struct {
-    VkPhysicalDevice physical;
-    VkDevice logical;
-} Rvk_Device;
+void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, VkBuffer vtx_buff, VkBuffer idx_buff, size_t idx_count);
 
-void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffer idx_buff);
-Rvk_Buffer r_create_and_upload_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data);
-bool r_upload_index_buffer(Rvk_device device, size_t size, size_t count, void *data, Rvk_Buffer *buff);
+/* This begin/end temporary command buffers are for one-off commands like copying,
+ * it's not very efficient, but it's convenient for quick temporary commands. Note
+ * that r_end_tmp_cmd_buff calls vkQueueuWaitIdle */
+VkCommandBuffer r_begin_tmp_cmd_buff(VkCommandPool pool, VkDevice device);
+void r_end_tmp_cmd_buff(VkQueue queue, VkDevice device, VkCommandPool pool, VkCommandBuffer tmp_cmd_buff);
+
+// TODO: I may put the command pool inside of the Rvk_Device
+Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data);
+Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -596,8 +621,10 @@ VkPresentModeKHR r_choose_present_mode(VkPhysicalDevice physical_device, VkSurfa
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format, VkRenderPass *render_pass)
+VkRenderPass r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color_format)
 {
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+
     VkAttachmentDescription color = {
         .format = color_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -637,74 +664,79 @@ bool r_create_render_pass(VkDevice device, VkFormat depth_format, VkFormat color
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
-    return vk_create_render_pass(device, NULL, render_pass,
-                                 .attachmentCount = RVK_ARRAY_LEN(attachments),
-                                 .pAttachments = attachments,
-                                 .subpassCount = 1,
-                                 .pSubpasses = &subpass,
-                                 .dependencyCount = 1,
-                                 .pDependencies = &dependency);
+    if (!vk_create_render_pass(device, NULL, &render_pass,
+                               .attachmentCount = RVK_ARRAY_LEN(attachments),
+                               .pAttachments = attachments,
+                               .subpassCount = 1,
+                               .pSubpasses = &subpass,
+                               .dependencyCount = 1,
+                               .pDependencies = &dependency)) return VK_NULL_HANDLE;
+    return render_pass;
 }
 
-bool r_create_rvk_swapchain(VkPhysicalDevice physical_device, VkDevice device, VkSurfaceKHR surface, int width, int height, Rvk_Swapchain *swapchain)
+Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, int width, int height)
 {
-    swapchain->surface_format = r_choose_swapchain_surface_format(physical_device, surface);
-    swapchain->extent         = r_suggest_swapchain_extent(physical_device, surface, width, height);
-    swapchain->image_count    = r_get_suggested_image_count(physical_device, surface);
+    Rvk_Swapchain swapchain = {
+        .surface_format = r_choose_swapchain_surface_format(device.physical, surface),
+        .extent         = r_suggest_swapchain_extent(device.physical, surface, width, height),
+        .image_count    = r_get_suggested_image_count(device.physical, surface),
+    };
 
-    if (!vk_create_swapchain_khr(device, NULL, &swapchain->handle,
+    if (!vk_create_swapchain_khr(device.logical, NULL, &swapchain.handle,
                                  .surface = surface,
-                                 .minImageCount = swapchain->image_count, // only a suggestion not guaranteed
-                                 .imageFormat = swapchain->surface_format.format,
-                                 .imageColorSpace = swapchain->surface_format.colorSpace,
-                                 .imageExtent = swapchain->extent,
+                                 .minImageCount = swapchain.image_count, // only a suggestion not guaranteed
+                                 .imageFormat = swapchain.surface_format.format,
+                                 .imageColorSpace = swapchain.surface_format.colorSpace,
+                                 .imageExtent = swapchain.extent,
                                  .imageArrayLayers = 1,
                                  .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                  .clipped = VK_TRUE,
                                  .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                                 .presentMode = r_choose_present_mode(physical_device, surface),
-                                 .preTransform = r_get_current_transform(physical_device, surface),
-                                 .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE)) return false;
+                                 .presentMode = r_choose_present_mode(device.physical, surface),
+                                 .preTransform = r_get_current_transform(device.physical, surface),
+                                 .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE)) return (Rvk_Swapchain){0};
 
     /* query ACTUAL image count */
-    if (!RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count, NULL))) return false;
-    if (swapchain->image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
+    if (!RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count, NULL)))
+        return (Rvk_Swapchain){0};
+    if (swapchain.image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
         r_log(RVK_ERROR, "swapchain RVK_MAX_SWAPCHAIN_IMAGES %zu was exceeded", RVK_MAX_SWAPCHAIN_IMAGES);
-        return false;
+        return (Rvk_Swapchain){0};
     }
-    if (!RVK(vkGetSwapchainImagesKHR(device, swapchain->handle, &swapchain->image_count,
-                                     swapchain->images))) return false;
+    if (!RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count,
+                                     swapchain.images))) return (Rvk_Swapchain){0};
 
     /* create the image views for the swapchain */
-    for (size_t i = 0; i < swapchain->image_count; i++) {
-        if (!vk_create_image_view(device, NULL, &swapchain->image_views[i],
-                                  .image = swapchain->images[i],
+    for (size_t i = 0; i < swapchain.image_count; i++) {
+        if (!vk_create_image_view(device.logical, NULL, &swapchain.image_views[i],
+                                  .image = swapchain.images[i],
                                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                  .format = swapchain->surface_format.format,
+                                  .format = swapchain.surface_format.format,
                                   .subresourceRange = {
                                       .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                                       .levelCount = 1,
                                       .layerCount = 1,
-                                  })) return false;
+                                  })) return (Rvk_Swapchain){0};
     }
 
-
-    return true;
+    return swapchain;
 }
 
-bool r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent, VkImage *image)
+VkImage r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent)
 { // TODO: since this is the simple "r_*" function, I feel like it should also allocate and bind_image_memory
-    return vk_create_image(device, NULL, image,
-                           .imageType = VK_IMAGE_TYPE_2D,
-                           .format = format,
-                           .extent = {extent.width, extent.height, 1},
-                           .mipLevels = 1,
-                           .arrayLayers = 1,
-                           .samples = VK_SAMPLE_COUNT_1_BIT,
-                           .tiling = VK_IMAGE_TILING_OPTIMAL,
-                           .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                           .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                           .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED);
+    VkImage image = VK_NULL_HANDLE;
+    if (!vk_create_image(device, NULL, &image,
+                         .imageType = VK_IMAGE_TYPE_2D,
+                         .format = format,
+                         .extent = {extent.width, extent.height, 1},
+                         .mipLevels = 1,
+                         .arrayLayers = 1,
+                         .samples = VK_SAMPLE_COUNT_1_BIT,
+                         .tiling = VK_IMAGE_TILING_OPTIMAL,
+                         .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED)) return VK_NULL_HANDLE;
+    return image;
 }
 
 uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t type, VkMemoryPropertyFlags properties)
@@ -720,54 +752,54 @@ uint32_t r_find_memory_type_index(VkPhysicalDevice physical_device, uint32_t typ
     return -1;
 }
 
-bool r_allocate_and_bind_image_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkImage image, VkDeviceMemory *memory)
+VkDeviceMemory r_allocate_and_bind_image_memory(Rvk_Device device, VkMemoryPropertyFlags mem_props, VkImage image)
 {
-    bool result = true;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
 
     VkMemoryRequirements mem_reqs = {0};
-    vkGetImageMemoryRequirements(device, image, &mem_reqs);
+    vkGetImageMemoryRequirements(device.logical, image, &mem_reqs);
     VkMemoryAllocateInfo alloc_ci = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = mem_reqs.size,
     };
     alloc_ci.memoryTypeIndex = r_find_memory_type_index(
-        physical_device,
+        device.physical,
         mem_reqs.memoryTypeBits,
         mem_props
     );
     if (alloc_ci.memoryTypeIndex == -1) {
         r_log(RVK_ERROR, "memory not suitable based on requirements");
-        return false;
+        return VK_NULL_HANDLE;
     }
-    result = RVK(vkAllocateMemory(device, &alloc_ci, NULL, memory));
-    if (!result) return false;
-    result = RVK(vkBindImageMemory(device, image, *memory, 0));
-    if (!result) return false;
+    if (!RVK(vkAllocateMemory(device.logical, &alloc_ci, NULL, &memory))) return VK_NULL_HANDLE;
+    if (!RVK(vkBindImageMemory(device.logical, image, memory, 0))) return VK_NULL_HANDLE;
 
-    return result;
+    return memory;
 }
 
-bool r_allocate_and_bind_buffer_memory(VkPhysicalDevice physical_device, VkDevice device, VkMemoryPropertyFlags mem_props, VkBuffer buffer, VkDeviceMemory *memory)
+VkDeviceMemory r_allocate_and_bind_buffer_memory(Rvk_Device device, VkMemoryPropertyFlags mem_props, VkBuffer buffer)
 {
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+
     VkMemoryRequirements mem_reqs = {0};
-    vkGetBufferMemoryRequirements(device, buffer, &mem_reqs);
+    vkGetBufferMemoryRequirements(device.logical, buffer, &mem_reqs);
     VkMemoryAllocateInfo alloc_ci = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = mem_reqs.size,
     };
     alloc_ci.memoryTypeIndex = r_find_memory_type_index(
-        physical_device,
+        device.physical,
         mem_reqs.memoryTypeBits,
         mem_props
     );
     if (alloc_ci.memoryTypeIndex == -1) {
         r_log(RVK_ERROR, "memory not suitable based on requirements");
-        return false;
+        return VK_NULL_HANDLE;
     }
-    if (!RVK(vkAllocateMemory(device, &alloc_ci, NULL, memory))) return false;
-    if (!RVK(vkBindBufferMemory(device, buffer, *memory, 0))) return false;
+    if (!RVK(vkAllocateMemory(device.logical, &alloc_ci, NULL, &memory))) return VK_NULL_HANDLE;
+    if (!RVK(vkBindBufferMemory(device.logical, buffer, memory, 0))) return VK_NULL_HANDLE;
 
-    return true;
+    return memory;
 }
 
 bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass)
@@ -904,53 +936,93 @@ void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent)
     vkCmdSetScissor(cmd_buff, 0, 1, &scissor);
 }
 
-void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, Rvk_Buffer vtx_buff, Rvk_Buffer idx_buff)
+void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, VkBuffer vtx_buff, VkBuffer idx_buff, size_t idx_count)
 {
     VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(cmd_buff, 0, 1, &vtx_buff.info.buffer, offsets);
-    vkCmdBindIndexBuffer(cmd_buff, idx_buff.info.buffer, 0, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(cmd_buff, idx_buff.count, 1, 0, 0, 0);
+    vkCmdBindVertexBuffers(cmd_buff, 0, 1, &vtx_buff, offsets);
+    vkCmdBindIndexBuffer(cmd_buff, idx_buff, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(cmd_buff, idx_count, 1, 0, 0, 0);
 }
 
-bool r_upload_vertex_buffer(Rvk_Device device, Rvk_Vertices vertices, Rvk_Buffer *buff)
+VkCommandBuffer r_begin_tmp_cmd_buff(VkCommandPool pool, VkDevice device)
 {
+    VkCommandBuffer cmd_buff = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = pool,
+        .commandBufferCount = 1,
+    };
+    if (!RVK(vkAllocateCommandBuffers(device, &ci, &cmd_buff))) return VK_NULL_HANDLE;
+    VkCommandBufferBeginInfo cmd_begin = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (!RVK(vkBeginCommandBuffer(cmd_buff, &cmd_begin))) return VK_NULL_HANDLE;
+    return cmd_buff;
+}
+
+void r_end_tmp_cmd_buff(VkQueue queue, VkDevice device, VkCommandPool pool, VkCommandBuffer tmp_cmd_buff)
+{
+    if (!RVK(vkEndCommandBuffer(tmp_cmd_buff))) goto defer;
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &tmp_cmd_buff,
+    };
+    if (!RVK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE))) goto defer;
+    if (!RVK(vkQueueWaitIdle(queue))) goto defer;
+
+defer:
+    vkFreeCommandBuffers(device, pool, 1, &tmp_cmd_buff);
+}
+
+Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data)
+{
+    bool result = true;
+    assert(device.physical);
+    assert(device.logical);
+    assert(device.command_pool);
+
     /* book keeping */
-    buff->info.range = size;
+    Rvk_Buffer buff = {.info.range = size};
 
     /* create a buffer */
-    if (!vk_create_buffer(device, NULL, &buff->info.buffer,
+    if (!vk_create_buffer(device.logical, NULL, &buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                          .size = size)) return false;
-    if (!r_allocate_and_bind_buffer_memory(physical_device,
-                                           device,
-                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                           buff->info.buffer,
-                                           &buff->memory)) return false;
+                          .size = size)) return (Rvk_Buffer){0};
+    if (!(buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                          buff.info.buffer))) return (Rvk_Buffer){0};
 
     /* create a staging buffer */
     Rvk_Buffer stg_buff = {0};
-    if (!vk_create_buffer(device, NULL, &stg_buff.info.buffer,
+    if (!vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          .size = size)) return false;
-    if (!r_allocate_and_bind_buffer_memory(physical_device,
-                                           device,
-                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                           stg_buff.info.buffer,
-                                           &stg_buff.memory)) return false;
-
+                          .size = size)) (Rvk_Buffer){0};
+    if (!(stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
+                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                              stg_buff.info.buffer))) return (Rvk_Buffer){0};
     /* copy data to staging buffer */
-    if (!RVK(vkMapMemory(device, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return false;
+    if (!RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return (Rvk_Buffer){0};
     memcpy(stg_buff.mapped, data, size);
-    vkUnmapMemory(device, stg_buff.memory);
+    vkUnmapMemory(device.logical, stg_buff.memory);
 
     /* transfer staging buffer to vertex buffer */
-    // rvk_buff_copy(buff, stg_buff, 0);
-    // rvk_buff_destroy(stg_buff);
+    VkCommandBuffer tmp_cmd_buff = r_begin_tmp_cmd_buff(device.command_pool, device.logical);
+        VkBufferCopy copy_region = {.size = size};
+        vkCmdCopyBuffer(tmp_cmd_buff, stg_buff.info.buffer, buff.info.buffer, 1, &copy_region);
+    r_end_tmp_cmd_buff(device.queue, device.logical, device.command_pool, tmp_cmd_buff);
+
+    /* destroy the staging buffer */
+    vkDestroyBuffer(device.logical, stg_buff.info.buffer, NULL);
+    vkFreeMemory(device.logical, stg_buff.memory, NULL);
 
     return buff;
 }
 
-bool r_upload_index_buffer(VkPhysicalDevice physical_device, VkDevice device, size_t size, size_t count, void *data, Rvk_Buffer *buff)
+Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data)
 {
 
 }
