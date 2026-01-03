@@ -33,7 +33,7 @@ static const char *device_exts[] = {"VK_KHR_swapchain"};
 Rvk_Simple_2D_Vertex vertices[] = {
     {{-0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
     {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{ 0.0f,  0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{ 0.0f, -0.5f}, {0.0f, 0.0f, 1.0f}},
 };
 
 uint16_t indices[] = {0, 1, 2};
@@ -125,7 +125,7 @@ int main()
                               })) return 1;
 
     if (!r_init_framebuffers(device.logical, &swapchain, render_pass)) return 1;
-    /* TODO_END */
+    /* TODO_END: this should probably go in r_create_rvk_swapchain */
 
     if (!vk_create_command_pool(device.logical, NULL, &device.command_pool,
                                 .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -185,17 +185,55 @@ int main()
     vkDestroyShaderModule(device.logical, stages[0].module, NULL);
     vkDestroyShaderModule(device.logical, stages[1].module, NULL);
 
+    size_t count = ARRAY_LEN(vertices);
+    size_t size = count*sizeof(*vertices);
+    Rvk_Buffer vtx = r_create_vertex_buffer(device, size, count, vertices);
+    if (!vtx.info.buffer) return 1;
+    count = ARRAY_LEN(indices);
+    size = count*sizeof(*indices);
+    Rvk_Buffer idx = r_create_index_buffer(device, size, count, indices);
+    if (!idx.info.buffer) return 1;
+
+    uint32_t img_idx = 0;
+    uint32_t current_frame = 0;
+
     /* game loop */
     int esc = 0;
     do {
-        // vkCmdBindPipeline(cmd_buff, 0, triangle.pipeline);
-        // r_cmd_set_viewport_scissor(cmd_buff, swapchain.extent);
+        /* wait to begin graphics */
+        if (!RVK(vkWaitForFences(device.logical, 1, &device.fences[current_frame], VK_TRUE, UINT64_MAX))) return 1;
+        if (!RVK(vkResetFences(device.logical, 1, &device.fences[current_frame]))) return 1;
+        if (!RVK(vkAcquireNextImageKHR(device.logical, swapchain.handle, UINT64_MAX,
+                                       device.image_available_sems[current_frame], VK_NULL_HANDLE, &img_idx))) return 1;
+        // TODO: look for swapchain resize if we set GLFW_RESIZABLE to false
+        if (!RVK(vkResetCommandBuffer(device.cmd_buffs[current_frame], 0))) return 1;
+        VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
+        if (!RVK(vkBeginCommandBuffer(device.cmd_buffs[current_frame], &begin_info))) return 1;
+            r_cmd_begin_render_pass(device.cmd_buffs[current_frame], render_pass, swapchain.framebuffers[img_idx],
+                                    swapchain.extent, 1.0f, 1.0f, 1.0f, 1.0f);
+                vkCmdBindPipeline(device.cmd_buffs[current_frame], 0, triangle.pipeline);
+                r_cmd_set_viewport_scissor(device.cmd_buffs[current_frame], swapchain.extent);
+                r_cmd_draw_buffers(device.cmd_buffs[current_frame], vtx.info.buffer, idx.info.buffer, ARRAY_LEN(indices));
+            vkCmdEndRenderPass(device.cmd_buffs[current_frame]);
+        if (!RVK(vkEndCommandBuffer(device.cmd_buffs[current_frame]))) return 1;
+
+        if (!r_submit(device, current_frame)) return 1;
+        if (!r_present(device.queue, device.render_finished_sems[current_frame], img_idx, swapchain.handle)) return 1;
 
         glfwPollEvents();
         esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+
+        // current_frame = (current_frame + 1) % RVK_MAX_FRAMES_IN_FLIGHT;
+
     } while (!esc && !glfwWindowShouldClose(window));
 
+    vkQueueWaitIdle(device.queue);
+
     /* cleanup (mainly so that validation layers don't yell at us, realistically the OS cleans up anyway) */
+    vkDestroyBuffer(device.logical, vtx.info.buffer, NULL);
+    vkFreeMemory(device.logical, vtx.memory, NULL);
+    vkDestroyBuffer(device.logical, idx.info.buffer, NULL);
+    vkFreeMemory(device.logical, idx.memory, NULL);
     vkDestroyPipeline(device.logical, triangle.pipeline, NULL);
     vkDestroyPipelineLayout(device.logical, triangle.pipeline_layout, NULL);
     for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {

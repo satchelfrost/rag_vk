@@ -89,6 +89,14 @@ Other Notes:
       VkGraphicsPipelineCreateInfo structs, and this breaks the __VA_ARGS__ macro trick.
       As a compromise there is "vk_create_graphics_pipeline" (without an "S"), which allows the
       macro trick to work, but means you can only create one graphics pipeline at a time.
+      list of afflicted functions:
+          -vkCreateGraphicsPipelines (note: only "vk_create_graphics_pipeline" exists)
+          -vkQueueSubmit (note: only "vk_queue_submit_once" exists)
+          -etc.
+
+      NOTE: I might have a fix for this, but it means that you can no longer use the macro trick, but that
+      might be fine since we have the default initializers.
+
     * avoid multithreading with r_default_* functions since they MAY contain static variables.
       In the future, I may create thread safe versions, but for now I'm not worried about it.
 
@@ -237,6 +245,9 @@ void r_end_tmp_cmd_buff(VkQueue queue, VkDevice device, VkCommandPool pool, VkCo
 // TODO: I may put the command pool inside of the Rvk_Device
 Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data);
 Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data);
+bool r_submit(Rvk_Device device, uint32_t current_frame);
+bool r_present(VkQueue queue, VkSemaphore render_finished, uint32_t image_index, VkSwapchainKHR swapchain);
+void r_cmd_begin_render_pass(VkCommandBuffer cb, VkRenderPass rp, VkFramebuffer fb, VkExtent2D extent, float r, float g, float b, float a);
 
 /***********************************************************************************
 *  vk_* API declarations
@@ -888,8 +899,8 @@ VkPipelineVertexInputStateCreateInfo r_default_simple_2D_vertex_input_state_ci()
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
     static VkVertexInputAttributeDescription vert_attrs[] = {
-        { .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Rvk_Simple_2D_Vertex, position)},
-        { .location = 1, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(Rvk_Simple_2D_Vertex, color)},
+        { .location = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Rvk_Simple_2D_Vertex, position)},
+        { .location = 1, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(Rvk_Simple_2D_Vertex, color)},
     };
     return (VkPipelineVertexInputStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1024,7 +1035,97 @@ Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, 
 
 Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data)
 {
+    bool result = true;
+    assert(device.physical);
+    assert(device.logical);
+    assert(device.command_pool);
 
+    /* book keeping */
+    Rvk_Buffer buff = {.info.range = size};
+
+    /* create a buffer */
+    if (!vk_create_buffer(device.logical, NULL, &buff.info.buffer,
+                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          .size = size)) return (Rvk_Buffer){0};
+    if (!(buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                          buff.info.buffer))) return (Rvk_Buffer){0};
+
+    /* create a staging buffer */
+    Rvk_Buffer stg_buff = {0};
+    if (!vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
+                          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          .size = size)) (Rvk_Buffer){0};
+    if (!(stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
+                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                              stg_buff.info.buffer))) return (Rvk_Buffer){0};
+    /* copy data to staging buffer */
+    if (!RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return (Rvk_Buffer){0};
+    memcpy(stg_buff.mapped, data, size);
+    vkUnmapMemory(device.logical, stg_buff.memory);
+
+    /* transfer staging buffer to vertex buffer */
+    VkCommandBuffer tmp_cmd_buff = r_begin_tmp_cmd_buff(device.command_pool, device.logical);
+        VkBufferCopy copy_region = {.size = size};
+        vkCmdCopyBuffer(tmp_cmd_buff, stg_buff.info.buffer, buff.info.buffer, 1, &copy_region);
+    r_end_tmp_cmd_buff(device.queue, device.logical, device.command_pool, tmp_cmd_buff);
+
+    /* destroy the staging buffer */
+    vkDestroyBuffer(device.logical, stg_buff.info.buffer, NULL);
+    vkFreeMemory(device.logical, stg_buff.memory, NULL);
+
+    return buff;
+}
+
+bool r_submit(Rvk_Device device, uint32_t current_frame)
+{
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &device.cmd_buffs[current_frame],
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &device.render_finished_sems[current_frame],
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &device.image_available_sems[current_frame],
+        .pWaitDstStageMask = &wait_stage,
+    };
+    return RVK(vkQueueSubmit(device.queue, 1, &submit, device.fences[current_frame]));
+}
+
+bool r_present(VkQueue queue, VkSemaphore render_finished, uint32_t image_index, VkSwapchainKHR swapchain)
+{
+    VkPresentInfoKHR present = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &render_finished,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+    return RVK(vkQueuePresentKHR(queue, &present));
+}
+
+void r_cmd_begin_render_pass(VkCommandBuffer cb, VkRenderPass rp, VkFramebuffer fb, VkExtent2D extent, float r, float g, float b, float a)
+{
+    VkClearValue clear_color = { .color = {{r, g, b, a}} };
+    VkClearValue clear_depth = {
+        .depthStencil = {
+            .depth = 1.0f,
+            .stencil = 0,
+        }
+    };
+    VkClearValue clear_values[] = {clear_color, clear_depth};
+    VkRenderPassBeginInfo begin_rp = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = rp,
+        .framebuffer = fb,
+        .renderArea.extent = extent,
+        .clearValueCount = RVK_ARRAY_LEN(clear_values),
+        .pClearValues = clear_values,
+    };
+    vkCmdBeginRenderPass(cb, &begin_rp, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 /***********************************************************************************
@@ -1175,6 +1276,12 @@ bool vk_create_buffer_(VkDevice device, const VkAllocationCallbacks *pAllocator,
 {
     ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     return RVK(vkCreateBuffer(device, &ci, pAllocator, pBuffer));
+}
+
+bool vk_queue_submit_once_(VkQueue queue, VkFence fence, VkSubmitInfo ci)
+{
+    ci.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    return RVK(vkQueueSubmit(queue, 1, &ci, fence));
 }
 
 #endif // RVK_IMPLEMENTATION
