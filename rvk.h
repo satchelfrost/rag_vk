@@ -98,9 +98,10 @@ Other Notes:
       might be fine since we have the default initializers.
 
     * avoid multithreading with r_default_* functions since they MAY contain static variables.
-      In the future, I may create thread safe versions, but for now I'm not worried about it.
+      To solve this issue I could make r_default_* functions return a pointer to heap allocated memory
+      and just have the user pass in an arena.
 
-      TODO:
+      TODO: - search "return (Rvk_" for issue
     * Currently, some of the r_create_* methods MAY leak memory if they fail. In practice,
       this probably wouldn't matter because if they do fail they log failure messages,
       and you will see these messages and prevent them from happening. Technically, though it is
@@ -158,6 +159,29 @@ VkPhysicalDevice r_pick_physical_device(VkInstance instance);
 
 /* returns max unt32_t upon error, surface == NULL means we don't care about present support */
 uint32_t r_find_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surface, VkQueueFlags flags);
+void r_log_queue_properties(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
+
+#define RVK_MAX_FRAMES_IN_FLIGHT 2
+typedef struct {
+    VkPhysicalDevice physical;
+    VkDevice logical;
+    uint32_t queue_family_index;
+    VkQueue queue;
+    VkCommandPool command_pool;
+    VkSemaphore image_available_sems[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_finished_sems[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkFence fences[RVK_MAX_FRAMES_IN_FLIGHT];
+    VkCommandBuffer cmd_buffs[RVK_MAX_FRAMES_IN_FLIGHT];
+} Rvk_Device;
+
+typedef struct {
+    uint32_t extension_count;
+    const char **extensions;
+    uint32_t layer_count;
+    const char **layers;
+} Rvk_Device_Config;
+
+Rvk_Device r_create_rvk_device(VkInstance instance, VkSurfaceKHR surface, Rvk_Device_Config config);
 
 VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 uint32_t r_get_suggested_image_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
@@ -177,30 +201,22 @@ typedef struct {
     VkImage images[RVK_MAX_SWAPCHAIN_IMAGES];
     VkImageView image_views[RVK_MAX_SWAPCHAIN_IMAGES];
     VkFramebuffer framebuffers[RVK_MAX_SWAPCHAIN_IMAGES];
+    VkSurfaceFormatKHR surface_format; // TODO: probably don't need to store
     VkImage depth_image;
     VkDeviceMemory depth_image_memory;
     VkImageView depth_image_view;
+    VkFormat depth_format; // TODO: probably don't need to store
     uint32_t image_count;
     bool resized;
-    VkSurfaceFormatKHR surface_format;
     VkExtent2D extent;
+    VkRenderPass render_pass;
 } Rvk_Swapchain;
-
-#define RVK_MAX_FRAMES_IN_FLIGHT 2
-typedef struct {
-    VkPhysicalDevice physical;
-    VkDevice logical;
-    uint32_t queue_family_index;
-    VkQueue queue;
-    VkCommandPool command_pool;
-    VkSemaphore image_available_sems[RVK_MAX_FRAMES_IN_FLIGHT];
-    VkSemaphore render_finished_sems[RVK_MAX_FRAMES_IN_FLIGHT];
-    VkFence fences[RVK_MAX_FRAMES_IN_FLIGHT];
-    VkCommandBuffer cmd_buffs[RVK_MAX_FRAMES_IN_FLIGHT];
-} Rvk_Device;
 
 /* create a basic swapchain */
 Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, int width, int height);
+
+// VkPipelineShaderStageCreateInfo r_create_vertex_shader(size_t code_size, const uint32_t *code);
+// VkPipelineShaderStageCreateInfo r_create_fragment_shader(size_t code_size, const uint32_t *code);
 
 /* for depth ,you might try format = VK_FORMAT_D32_SFLOAT and flags = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
  * for color you might try format = VK_FORMAT_R8G8B8A8_SRGB and flags =
@@ -570,6 +586,59 @@ void r_log_queue_properties(VkPhysicalDevice physical_device, VkSurfaceKHR surfa
     }
 }
 
+Rvk_Device r_create_rvk_device(VkInstance instance, VkSurfaceKHR surface, Rvk_Device_Config config)
+{
+    /* pick physical device (tries to prefer discrete GPU) */
+    Rvk_Device device = { .physical = VK_NULL_HANDLE, .logical = VK_NULL_HANDLE };
+    if (!(device.physical = r_pick_physical_device(instance))) return (Rvk_Device){0};
+
+    /* find a queue family with graphics & present support.
+     * if we don't care about present support set surface = NULL.
+     * if we want a queue family with compute and graphics set flags e.g.:
+     *     VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT */
+    device.queue_family_index = r_find_queue_family(device.physical, surface, VK_QUEUE_GRAPHICS_BIT);
+    if (device.queue_family_index == -1) {
+        r_log(RVK_ERROR, "failed to find sufficient queue family");
+        return (Rvk_Device){0};
+    }
+
+    /* create a device with the queue family index and physical device we picked */
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_ci = {
+        .queueFamilyIndex = device.queue_family_index,
+        .queueCount = 1,
+        .pQueuePriorities = &priority,
+    };
+    if (!vk_create_device(device.physical, NULL, &device.logical,
+                          .pQueueCreateInfos = &queue_ci,
+                          .queueCreateInfoCount = 1,
+                          .enabledExtensionCount = config.extension_count,
+                          .ppEnabledExtensionNames = config.extensions,
+                          .ppEnabledLayerNames = config.layers,
+                          .enabledLayerCount = config.layer_count)) return (Rvk_Device){0};
+
+    /* acquire the queue */
+    vkGetDeviceQueue(device.logical, device.queue_family_index, 0, &device.queue);
+    if (!device.queue) return (Rvk_Device){0};
+
+    if (!vk_create_command_pool(device.logical, NULL, &device.command_pool,
+                                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                .queueFamilyIndex = device.queue_family_index)) (Rvk_Device){0};
+
+    if (!vk_allocate_command_buffers(device.logical, device.cmd_buffs,
+                                     .commandPool = device.command_pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                     .commandBufferCount = RVK_MAX_FRAMES_IN_FLIGHT)) (Rvk_Device){0};
+
+    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
+        if (!vk_create_semaphore(device.logical, NULL, &device.image_available_sems[i])) (Rvk_Device){0};
+        if (!vk_create_semaphore(device.logical, NULL, &device.render_finished_sems[i])) (Rvk_Device){0};
+        if (!vk_create_fence(device.logical, NULL, &device.fences[i], .flags = VK_FENCE_CREATE_SIGNALED_BIT)) (Rvk_Device){0};
+    }
+
+    return device;
+}
+
 VkSurfaceFormatKHR r_choose_swapchain_surface_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
 {
     uint32_t surface_fmt_count = 0;
@@ -730,8 +799,52 @@ Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, in
                                   })) return (Rvk_Swapchain){0};
     }
 
+    /* create depth image */
+    swapchain.depth_format = VK_FORMAT_D32_SFLOAT; // TODO: create r_choose_depth_format
+
+    if (!(swapchain.depth_image = r_create_2D_image(device.logical, swapchain.depth_format,
+                                                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                                    swapchain.extent))) return (Rvk_Swapchain){0};
+    if (!(swapchain.depth_image_memory = r_allocate_and_bind_image_memory(device,
+                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                                          swapchain.depth_image))) return (Rvk_Swapchain){0};
+    if (!vk_create_image_view(device.logical, NULL, &swapchain.depth_image_view,
+                              .image = swapchain.depth_image,
+                              .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                              .format = swapchain.depth_format,
+                              .subresourceRange = {
+                                  .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                  .levelCount = 1, .layerCount = 1,
+                              })) return (Rvk_Swapchain){0};
+
+    swapchain.render_pass = r_create_render_pass(device.logical, swapchain.depth_format, swapchain.surface_format.format);
+    if (!swapchain.render_pass) return (Rvk_Swapchain){0};
+    if (!r_init_framebuffers(device.logical, &swapchain, swapchain.render_pass)) return (Rvk_Swapchain){0};
+
     return swapchain;
 }
+
+// VkPipelineShaderStageCreateInfo r_create_vertex_shader(size_t code_size, const uint32_t *code)
+// {
+//     VkPipelineShaderStageCreateInfo ci = {
+//         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+//         .pName = "main"
+//     };
+//     if (!vk_create_shader_module(device.logical, NULL, &stage.module,
+//                                  .codeSize = code_size, .pCode = code)) return (VkPipelineShaderStageCreateInfo){0};
+//     return ci;
+// }
+//
+// VkPipelineShaderStageCreateInfo r_create_fragment_shader(size_t code_size, const uint32_t *code)
+// {
+//     VkPipelineShaderStageCreateInfo ci = {
+//         .stage = VK_SHADER_STAGE_FRAGMENT_BIT
+//         .pName = "main"
+//     };
+//     if (!vk_create_shader_module(device.logical, NULL, &stage.module,
+//                                  .codeSize = code_size, .pCode = code)) return (VkPipelineShaderStageCreateInfo){0};
+//     return ci;
+// }
 
 VkImage r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent)
 { // TODO: since this is the simple "r_*" function, I feel like it should also allocate and bind_image_memory

@@ -66,89 +66,31 @@ int main()
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     if (!RVK(glfwCreateWindowSurface(instance, window, NULL, &surface))) return 1;
 
-    /* pick physical device (tries to prefer discrete GPU) */
-    Rvk_Device device = { .physical = VK_NULL_HANDLE, .logical = VK_NULL_HANDLE };
-    if (!(device.physical = r_pick_physical_device(instance))) return 1;
-
-    /* find a queue family with graphics & present support.
-     * if we don't care about present support set surface = NULL.
-     * if we want a queue family with compute and graphics set flags e.g.:
-     *     VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT */
-    device.queue_family_index = r_find_queue_family(device.physical, surface, VK_QUEUE_GRAPHICS_BIT);
-    if (device.queue_family_index == -1) {
-        r_log(RVK_ERROR, "failed to find sufficient queue family");
-        return 1;
-    }
-
-    /* create a device with the queue family index and physical device we picked */
-    float priority = 1.0f;
-    VkDeviceQueueCreateInfo queue_ci = {
-        .queueFamilyIndex = device.queue_family_index,
-        .queueCount = 1,
-        .pQueuePriorities = &priority,
+    Rvk_Device_Config device_config = {
+        .extension_count = ARRAY_LEN(device_exts),
+        .extensions = device_exts,
+        .layer_count = ARRAY_LEN(layers),
+        .layers = layers,
     };
-    if (!vk_create_device(device.physical, NULL, &device.logical,
-                          .pQueueCreateInfos = &queue_ci,
-                          .queueCreateInfoCount = 1,
-                          .enabledExtensionCount = ARRAY_LEN(device_exts),
-                          .ppEnabledExtensionNames = device_exts,
-                          .ppEnabledLayerNames = layers,
-                          .enabledLayerCount = ARRAY_LEN(layers))) return 1;
-
-    /* acquire the queue */
-    vkGetDeviceQueue(device.logical, device.queue_family_index, 0, &device.queue);
-    if (!device.queue) return 1;
+    Rvk_Device device = r_create_rvk_device(instance, surface, device_config);
+    if (!device.logical) return 1;
 
     /* create swapchain */
     Rvk_Swapchain swapchain = r_create_rvk_swapchain(device, surface, WINDOW_WIDTH, WINDOW_HEIGHT);
     if (!swapchain.handle) return 1;
 
-    /* create renderpass */
-    VkFormat depth_format =  VK_FORMAT_D32_SFLOAT;
-    VkRenderPass render_pass = VK_NULL_HANDLE;
-    if (!(render_pass = r_create_render_pass(device.logical, depth_format, swapchain.surface_format.format))) return 1;
-
-    /* TODO_BEGIN: this should probably go in r_create_rvk_swapchain */
-    if (!(swapchain.depth_image = r_create_2D_image(device.logical, depth_format,
-                                                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                                    swapchain.extent))) return 1;
-    if (!(swapchain.depth_image_memory = r_allocate_and_bind_image_memory(device,
-                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                                          swapchain.depth_image))) return 1;
-    if (!vk_create_image_view(device.logical, NULL, &swapchain.depth_image_view,
-                              .image = swapchain.depth_image,
-                              .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                              .format = depth_format,
-                              .subresourceRange = {
-                                  .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                  .levelCount = 1, .layerCount = 1,
-                              })) return 1;
-
-    if (!r_init_framebuffers(device.logical, &swapchain, render_pass)) return 1;
-    /* TODO_END: this should probably go in r_create_rvk_swapchain */
-
-    if (!vk_create_command_pool(device.logical, NULL, &device.command_pool,
-                                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                .queueFamilyIndex = device.queue_family_index)) return 1;
-
-    if (!vk_allocate_command_buffers(device.logical, device.cmd_buffs,
-                                     .commandPool = device.command_pool,
-                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                     .commandBufferCount = RVK_MAX_FRAMES_IN_FLIGHT)) return 1;
-
-    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
-        if (!vk_create_semaphore(device.logical, NULL, &device.image_available_sems[i])) return 1;
-        if (!vk_create_semaphore(device.logical, NULL, &device.render_finished_sems[i])) return 1;
-        if (!vk_create_fence(device.logical, NULL, &device.fences[i], .flags = VK_FENCE_CREATE_SIGNALED_BIT)) return 1;
-    }
-
     if (!vk_create_pipeline_layout(device.logical, NULL, &triangle.pipeline_layout)) return 1;
 
+    typedef struct {
+        VkPipelineShaderStageCreateInfo vertex;
+        VkPipelineShaderStageCreateInfo fragment;
+    } Rvk_Standard_Shaders;
+
+    /* TODO: put this in something */
     VkPipelineShaderStageCreateInfo stages[] = {
         {.stage = VK_SHADER_STAGE_VERTEX_BIT,   .pName = "main"},
         {.stage = VK_SHADER_STAGE_FRAGMENT_BIT, .pName = "main"},
     };
-
     String_Builder sb = {0};
     if (!read_entire_file("shaders/triangle.vert.glsl.spv", &sb)) return 1;
     if (!vk_create_shader_module(device.logical, NULL, &stages[0].module,
@@ -180,8 +122,7 @@ int main()
                                      .pColorBlendState = &color_blend_state_ci,
                                      .pDynamicState = &dynamic_state_ci,
                                      .layout = triangle.pipeline_layout,
-                                     .renderPass = render_pass)) return 1;
-
+                                     .renderPass = swapchain.render_pass)) return 1;
     vkDestroyShaderModule(device.logical, stages[0].module, NULL);
     vkDestroyShaderModule(device.logical, stages[1].module, NULL);
 
@@ -209,7 +150,7 @@ int main()
         if (!RVK(vkResetCommandBuffer(device.cmd_buffs[current_frame], 0))) return 1;
         VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
         if (!RVK(vkBeginCommandBuffer(device.cmd_buffs[current_frame], &begin_info))) return 1;
-            r_cmd_begin_render_pass(device.cmd_buffs[current_frame], render_pass, swapchain.framebuffers[img_idx],
+            r_cmd_begin_render_pass(device.cmd_buffs[current_frame], swapchain.render_pass, swapchain.framebuffers[img_idx],
                                     swapchain.extent, 1.0f, 1.0f, 1.0f, 1.0f);
                 vkCmdBindPipeline(device.cmd_buffs[current_frame], 0, triangle.pipeline);
                 r_cmd_set_viewport_scissor(device.cmd_buffs[current_frame], swapchain.extent);
@@ -234,8 +175,11 @@ int main()
     vkFreeMemory(device.logical, vtx.memory, NULL);
     vkDestroyBuffer(device.logical, idx.info.buffer, NULL);
     vkFreeMemory(device.logical, idx.memory, NULL);
+
     vkDestroyPipeline(device.logical, triangle.pipeline, NULL);
     vkDestroyPipelineLayout(device.logical, triangle.pipeline_layout, NULL);
+
+    // TODO: this should be in r_destroy_rvk_device
     for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroyFence(device.logical, device.fences[i], NULL);
         vkDestroySemaphore(device.logical, device.image_available_sems[i], NULL);
@@ -243,14 +187,16 @@ int main()
     }
     vkFreeCommandBuffers(device.logical, device.command_pool, RVK_MAX_FRAMES_IN_FLIGHT, device.cmd_buffs);
     vkDestroyCommandPool(device.logical, device.command_pool, NULL);
+
     for (size_t i = 0; i < swapchain.image_count; i++)
         vkDestroyFramebuffer(device.logical, swapchain.framebuffers[i], NULL);
     vkDestroyImageView(device.logical, swapchain.depth_image_view, NULL);
     vkDestroyImage(device.logical, swapchain.depth_image, NULL);
     vkFreeMemory(device.logical, swapchain.depth_image_memory, NULL);
-    vkDestroyRenderPass(device.logical, render_pass, NULL);
+    vkDestroyRenderPass(device.logical, swapchain.render_pass, NULL);
     for (size_t i = 0; i < swapchain.image_count; i++)
         vkDestroyImageView(device.logical, swapchain.image_views[i], NULL);
+
     vkDestroySwapchainKHR(device.logical, swapchain.handle, NULL);
     vkDestroyDevice(device.logical, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);
