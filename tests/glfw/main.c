@@ -81,51 +81,36 @@ int main()
 
     if (!vk_create_pipeline_layout(device.logical, NULL, &triangle.pipeline_layout)) return 1;
 
-    typedef struct {
-        VkPipelineShaderStageCreateInfo vertex;
-        VkPipelineShaderStageCreateInfo fragment;
-    } Rvk_Standard_Shaders;
-
-    /* TODO: put this in something */
-    VkPipelineShaderStageCreateInfo stages[] = {
-        {.stage = VK_SHADER_STAGE_VERTEX_BIT,   .pName = "main"},
-        {.stage = VK_SHADER_STAGE_FRAGMENT_BIT, .pName = "main"},
-    };
+    VkPipelineShaderStageCreateInfo stages[2];
     String_Builder sb = {0};
     if (!read_entire_file("shaders/triangle.vert.glsl.spv", &sb)) return 1;
-    if (!vk_create_shader_module(device.logical, NULL, &stages[0].module,
-                                 .codeSize = sb.count, .pCode = (uint32_t *)sb.items)) return 1;
+    stages[0] = r_create_vertex_stage_ci(device.logical, sb.count, (uint32_t*)sb.items);
+    if (!stages[0].module) return 1;
     sb.count = 0; // reuse memory
     if (!read_entire_file("shaders/triangle.frag.glsl.spv", &sb)) return 1;
-    if (!vk_create_shader_module(device.logical, NULL, &stages[1].module,
-                                 .codeSize = sb.count, .pCode = (uint32_t *)sb.items)) return 1;
+    stages[1] = r_create_fragment_stage_ci(device.logical, sb.count, (uint32_t*)sb.items);
+    if (!stages[0].module) return 1;
     sb.count = 0; // reuse memory
 
-    VkPipelineVertexInputStateCreateInfo vertex_input_state_ci = r_default_simple_2D_vertex_input_state_ci();
-    VkPipelineInputAssemblyStateCreateInfo input_assembly_state_ci = r_default_input_assembly_state_ci();
-    VkPipelineViewportStateCreateInfo viewport_state_ci = r_default_viewport_state_ci(swapchain.extent);
-    VkPipelineRasterizationStateCreateInfo rasterization_state_ci = r_default_rasterization_state_ci();
-    VkPipelineMultisampleStateCreateInfo multisampling_state_ci = r_default_multisample_state_ci();
-    VkPipelineDepthStencilStateCreateInfo depth_stencil_state_ci = r_default_depth_stencil_state_ci();
-    VkPipelineColorBlendStateCreateInfo color_blend_state_ci = r_default_color_blend_state_ci();
-    VkPipelineDynamicStateCreateInfo dynamic_state_ci = r_default_dynamic_state_ci();
-
+    size_t temp_alloc_save_point = r_temp_save();
     if (!vk_create_graphics_pipeline(device.logical, NULL, NULL, &triangle.pipeline,
                                      .stageCount = ARRAY_LEN(stages),
                                      .pStages = stages,
-                                     .pVertexInputState = &vertex_input_state_ci,
-                                     .pInputAssemblyState = &input_assembly_state_ci,
-                                     .pViewportState = &viewport_state_ci,
-                                     .pRasterizationState = &rasterization_state_ci,
-                                     .pMultisampleState = &multisampling_state_ci,
-                                     .pDepthStencilState = &depth_stencil_state_ci,
-                                     .pColorBlendState = &color_blend_state_ci,
-                                     .pDynamicState = &dynamic_state_ci,
+                                     .pVertexInputState = r_temp_default_simple_2D_vertex_input_state_ci(),
+                                     .pInputAssemblyState = r_temp_default_input_assembly_state_ci(),
+                                     .pViewportState = r_temp_default_viewport_state_ci(swapchain.extent),
+                                     .pRasterizationState = r_temp_default_rasterization_state_ci(),
+                                     .pMultisampleState = r_temp_default_multisample_state_ci(),
+                                     .pDepthStencilState = r_temp_default_depth_stencil_state_ci(),
+                                     .pColorBlendState = r_temp_default_color_blend_state_ci(),
+                                     .pDynamicState = r_temp_default_dynamic_state_ci(),
                                      .layout = triangle.pipeline_layout,
                                      .renderPass = swapchain.render_pass)) return 1;
+    r_temp_rewind(temp_alloc_save_point);
     vkDestroyShaderModule(device.logical, stages[0].module, NULL);
     vkDestroyShaderModule(device.logical, stages[1].module, NULL);
 
+    /* create vertex/index buffers */
     size_t count = ARRAY_LEN(vertices);
     size_t size = count*sizeof(*vertices);
     Rvk_Buffer vtx = r_create_vertex_buffer(device, size, count, vertices);
@@ -142,14 +127,11 @@ int main()
     int esc = 0;
     do {
         /* wait to begin graphics */
-        if (!RVK(vkWaitForFences(device.logical, 1, &device.fences[current_frame], VK_TRUE, UINT64_MAX))) return 1;
-        if (!RVK(vkResetFences(device.logical, 1, &device.fences[current_frame]))) return 1;
-        if (!RVK(vkAcquireNextImageKHR(device.logical, swapchain.handle, UINT64_MAX,
-                                       device.image_available_sems[current_frame], VK_NULL_HANDLE, &img_idx))) return 1;
+        if (!r_wait_reset_fence(device.logical, &device.fences[current_frame])) return 1;
+        if (!r_acquire_next_image(device.logical, swapchain.handle,
+                                  device.image_available_sems[current_frame], &img_idx)) return 1;
         // TODO: look for swapchain resize if we set GLFW_RESIZABLE to false
-        if (!RVK(vkResetCommandBuffer(device.cmd_buffs[current_frame], 0))) return 1;
-        VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
-        if (!RVK(vkBeginCommandBuffer(device.cmd_buffs[current_frame], &begin_info))) return 1;
+        if (!r_reset_begin_cmd_buff(device.cmd_buffs[current_frame])) return 1;
             r_cmd_begin_render_pass(device.cmd_buffs[current_frame], swapchain.render_pass, swapchain.framebuffers[img_idx],
                                     swapchain.extent, 1.0f, 1.0f, 1.0f, 1.0f);
                 vkCmdBindPipeline(device.cmd_buffs[current_frame], 0, triangle.pipeline);
@@ -164,41 +146,18 @@ int main()
         glfwPollEvents();
         esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
 
-        // current_frame = (current_frame + 1) % RVK_MAX_FRAMES_IN_FLIGHT;
+        current_frame = (current_frame + 1) % RVK_MAX_FRAMES_IN_FLIGHT;
 
     } while (!esc && !glfwWindowShouldClose(window));
 
+    /* cleanup  */
     vkQueueWaitIdle(device.queue);
-
-    /* cleanup (mainly so that validation layers don't yell at us, realistically the OS cleans up anyway) */
-    vkDestroyBuffer(device.logical, vtx.info.buffer, NULL);
-    vkFreeMemory(device.logical, vtx.memory, NULL);
-    vkDestroyBuffer(device.logical, idx.info.buffer, NULL);
-    vkFreeMemory(device.logical, idx.memory, NULL);
-
+    r_destroy_rvk_buffer(device.logical, vtx);
+    r_destroy_rvk_buffer(device.logical, idx);
     vkDestroyPipeline(device.logical, triangle.pipeline, NULL);
     vkDestroyPipelineLayout(device.logical, triangle.pipeline_layout, NULL);
-
-    // TODO: this should be in r_destroy_rvk_device
-    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
-        vkDestroyFence(device.logical, device.fences[i], NULL);
-        vkDestroySemaphore(device.logical, device.image_available_sems[i], NULL);
-        vkDestroySemaphore(device.logical, device.render_finished_sems[i], NULL);
-    }
-    vkFreeCommandBuffers(device.logical, device.command_pool, RVK_MAX_FRAMES_IN_FLIGHT, device.cmd_buffs);
-    vkDestroyCommandPool(device.logical, device.command_pool, NULL);
-
-    for (size_t i = 0; i < swapchain.image_count; i++)
-        vkDestroyFramebuffer(device.logical, swapchain.framebuffers[i], NULL);
-    vkDestroyImageView(device.logical, swapchain.depth_image_view, NULL);
-    vkDestroyImage(device.logical, swapchain.depth_image, NULL);
-    vkFreeMemory(device.logical, swapchain.depth_image_memory, NULL);
-    vkDestroyRenderPass(device.logical, swapchain.render_pass, NULL);
-    for (size_t i = 0; i < swapchain.image_count; i++)
-        vkDestroyImageView(device.logical, swapchain.image_views[i], NULL);
-
-    vkDestroySwapchainKHR(device.logical, swapchain.handle, NULL);
-    vkDestroyDevice(device.logical, NULL);
+    r_destroy_rvk_swapchain(device.logical, swapchain);
+    r_destroy_rvk_device(device);
     vkDestroySurfaceKHR(instance, surface, NULL);
     vkDestroyInstance(instance, NULL);
 

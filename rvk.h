@@ -89,26 +89,8 @@ Other Notes:
       VkGraphicsPipelineCreateInfo structs, and this breaks the __VA_ARGS__ macro trick.
       As a compromise there is "vk_create_graphics_pipeline" (without an "S"), which allows the
       macro trick to work, but means you can only create one graphics pipeline at a time.
-      list of afflicted functions:
-          -vkCreateGraphicsPipelines (note: only "vk_create_graphics_pipeline" exists)
-          -vkQueueSubmit (note: only "vk_queue_submit_once" exists)
-          -etc.
-
-      NOTE: I might have a fix for this, but it means that you can no longer use the macro trick, but that
-      might be fine since we have the default initializers.
-
-    * avoid multithreading with r_default_* functions since they MAY contain static variables.
-      To solve this issue I could make r_default_* functions return a pointer to heap allocated memory
-      and just have the user pass in an arena.
-
-      TODO: - search "return (Rvk_" for issue
-    * Currently, some of the r_create_* methods MAY leak memory if they fail. In practice,
-      this probably wouldn't matter because if they do fail they log failure messages,
-      and you will see these messages and prevent them from happening. Technically, though it is
-      possible, and what I probably should be doing is using an arena, and upon failure resetting
-      to some save point at the beginning of the function call. For now I'm not worried, but at some
-      point this could cause issues.
-
+    * r_temp_default_* functions allocate temporary memory using r_temp_alloc. This is a temporary
+      allocator which can be reset/rewound if desired.
 */
 
 #ifndef RVK_H_
@@ -125,6 +107,18 @@ Other Notes:
 #include <errno.h>
 #include <stdio.h>
 #include <stdbool.h>
+
+#ifndef RVK_ASSERT
+#define RVK_ASSERT assert
+#endif // RVK_ASSERT
+
+#ifndef RVK_REALLOC
+#define RVK_REALLOC realloc
+#endif // RVK_REALLOC
+
+#ifndef RVK_FREE
+#define RVK_FREE free
+#endif // RVK_FREE
 
 typedef struct {
     float x, y, z;
@@ -149,7 +143,31 @@ void r_log(Rvk_Log_Level level, const char *fmt, ...);
 const char *r_vk_res_to_str(VkResult res);
 bool r_check_vk_result(VkResult result, const char* function);
 #define RVK(func) r_check_vk_result(func, #func)
-VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info();
+VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info(void);
+
+#if defined(__GNUC__) || defined(__clang__)
+//   https://gcc.gnu.org/onlinedocs/gcc-4.7.2/gcc/Function-Attributes.html
+#    ifdef __MINGW_PRINTF_FORMAT
+#        define RVK_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK) __attribute__ ((format (__MINGW_PRINTF_FORMAT, STRING_INDEX, FIRST_TO_CHECK)))
+#    else
+#        define RVK_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK) __attribute__ ((format (printf, STRING_INDEX, FIRST_TO_CHECK)))
+#    endif // __MINGW_PRINTF_FORMAT
+#else
+//   TODO: implement RVK_PRINTF_FORMAT for MSVC
+#    define RVK_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK)
+#endif
+
+#ifndef RVK_TEMP_CAPACITY
+#define RVK_TEMP_CAPACITY (8*1024*1024)
+#endif // RVK_TEMP_CAPACITY
+
+char *r_temp_strdup(const char *cstr);
+char *r_temp_strndup(const char *s, size_t n);
+void *r_temp_alloc(size_t requested_size);
+char *r_temp_sprintf(const char *format, ...) RVK_PRINTF_FORMAT(1, 2);
+void r_temp_reset(void);
+size_t r_temp_save(void);
+void r_temp_rewind(size_t checkpoint);
 
 bool r_instance_layers_supported(const char **requested_layers, uint32_t requested_layer_count);
 bool r_instance_extensions_supported(const char **requested_extensions, uint32_t requested_extension_count);
@@ -182,6 +200,7 @@ typedef struct {
 } Rvk_Device_Config;
 
 Rvk_Device r_create_rvk_device(VkInstance instance, VkSurfaceKHR surface, Rvk_Device_Config config);
+void r_destroy_rvk_device(Rvk_Device device);
 
 VkSurfaceFormatKHR r_choose_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 uint32_t r_get_suggested_image_count(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
@@ -214,9 +233,11 @@ typedef struct {
 
 /* create a basic swapchain */
 Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, int width, int height);
+void r_destroy_rvk_swapchain(VkDevice device, Rvk_Swapchain swapchain);
 
-// VkPipelineShaderStageCreateInfo r_create_vertex_shader(size_t code_size, const uint32_t *code);
-// VkPipelineShaderStageCreateInfo r_create_fragment_shader(size_t code_size, const uint32_t *code);
+VkPipelineShaderStageCreateInfo r_create_vertex_stage_ci(VkDevice device, size_t code_size, const uint32_t *code);
+VkPipelineShaderStageCreateInfo r_create_fragment_stage_ci(VkDevice device, size_t code_size, const uint32_t *code);
+VkShaderModule r_create_shader_module(VkDevice device, size_t code_size, const uint32_t *code);
 
 /* for depth ,you might try format = VK_FORMAT_D32_SFLOAT and flags = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
  * for color you might try format = VK_FORMAT_R8G8B8A8_SRGB and flags =
@@ -233,14 +254,14 @@ VkDeviceMemory r_allocate_and_bind_buffer_memory(Rvk_Device device, VkMemoryProp
 bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass render_pass);
 
 /* default state create info initializers for when you are creating pipelines */
-VkPipelineDepthStencilStateCreateInfo r_default_depth_stencil_state_ci();
-VkPipelineRasterizationStateCreateInfo r_default_rasterization_state_ci();
-VkPipelineMultisampleStateCreateInfo r_default_multisample_state_ci();
-VkPipelineViewportStateCreateInfo r_default_viewport_state_ci(VkExtent2D extent);
-VkPipelineInputAssemblyStateCreateInfo r_default_input_assembly_state_ci();
-VkPipelineVertexInputStateCreateInfo r_default_simple_2D_vertex_input_state_ci();
-VkPipelineColorBlendStateCreateInfo r_default_color_blend_state_ci();
-VkPipelineDynamicStateCreateInfo r_default_dynamic_state_ci();
+VkPipelineDepthStencilStateCreateInfo *r_temp_default_depth_stencil_state_ci(void);
+VkPipelineRasterizationStateCreateInfo *r_temp_default_rasterization_state_ci(void);
+VkPipelineMultisampleStateCreateInfo *r_temp_default_multisample_state_ci(void);
+VkPipelineViewportStateCreateInfo *r_temp_default_viewport_state_ci(VkExtent2D extent);
+VkPipelineInputAssemblyStateCreateInfo *r_temp_default_input_assembly_state_ci(void);
+VkPipelineVertexInputStateCreateInfo *r_temp_default_simple_2D_vertex_input_state_ci(void);
+VkPipelineColorBlendStateCreateInfo *r_temp_default_color_blend_state_ci(void);
+VkPipelineDynamicStateCreateInfo *r_temp_default_dynamic_state_ci(void);
 
 void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent);
 
@@ -258,9 +279,12 @@ void r_cmd_draw_buffers(VkCommandBuffer cmd_buff, VkBuffer vtx_buff, VkBuffer id
 VkCommandBuffer r_begin_tmp_cmd_buff(VkCommandPool pool, VkDevice device);
 void r_end_tmp_cmd_buff(VkQueue queue, VkDevice device, VkCommandPool pool, VkCommandBuffer tmp_cmd_buff);
 
-// TODO: I may put the command pool inside of the Rvk_Device
 Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data);
 Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data);
+void r_destroy_rvk_buffer(VkDevice device, Rvk_Buffer buffer);
+bool r_wait_reset_fence(VkDevice device, VkFence *fence);
+bool r_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, VkSemaphore image_available, uint32_t *image_index);
+bool r_reset_begin_cmd_buff(VkCommandBuffer cmd_buff);
 bool r_submit(Rvk_Device device, uint32_t current_frame);
 bool r_present(VkQueue queue, VkSemaphore render_finished, uint32_t image_index, VkSwapchainKHR swapchain);
 void r_cmd_begin_render_pass(VkCommandBuffer cb, VkRenderPass rp, VkFramebuffer fb, VkExtent2D extent, float r, float g, float b, float a);
@@ -327,6 +351,9 @@ bool vk_create_buffer_(VkDevice device, const VkAllocationCallbacks *pAllocator,
 #define RVK_SUCCEEDED(x) ((x) == VK_SUCCESS)
 #define CLAMP(val, min, max) ((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val))
 #define RVK_ARRAY_LEN(array) (sizeof(array)/sizeof(array[0]))
+
+static size_t r_temp_size = 0;
+static char r_temp[RVK_TEMP_CAPACITY] = {0};
 
 /***********************************************************************************
 *  r_* API implementation
@@ -497,7 +524,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL r_debug_callback(
     return VK_FALSE;
 }
 
-VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info()
+VkDebugUtilsMessengerCreateInfoEXT r_get_debug_messenger_info(void)
 {
     return (VkDebugUtilsMessengerCreateInfoEXT) {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -619,24 +646,35 @@ Rvk_Device r_create_rvk_device(VkInstance instance, VkSurfaceKHR surface, Rvk_De
 
     /* acquire the queue */
     vkGetDeviceQueue(device.logical, device.queue_family_index, 0, &device.queue);
-    if (!device.queue) return (Rvk_Device){0};
+    RVK_ASSERT(device.queue);
+    RVK_ASSERT(vk_create_command_pool(device.logical, NULL, &device.command_pool,
+                                      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                      .queueFamilyIndex = device.queue_family_index));
 
-    if (!vk_create_command_pool(device.logical, NULL, &device.command_pool,
-                                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                .queueFamilyIndex = device.queue_family_index)) (Rvk_Device){0};
-
-    if (!vk_allocate_command_buffers(device.logical, device.cmd_buffs,
-                                     .commandPool = device.command_pool,
-                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                     .commandBufferCount = RVK_MAX_FRAMES_IN_FLIGHT)) (Rvk_Device){0};
+    RVK_ASSERT(vk_allocate_command_buffers(device.logical, device.cmd_buffs,
+                                           .commandPool = device.command_pool,
+                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                           .commandBufferCount = RVK_MAX_FRAMES_IN_FLIGHT));
 
     for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
-        if (!vk_create_semaphore(device.logical, NULL, &device.image_available_sems[i])) (Rvk_Device){0};
-        if (!vk_create_semaphore(device.logical, NULL, &device.render_finished_sems[i])) (Rvk_Device){0};
-        if (!vk_create_fence(device.logical, NULL, &device.fences[i], .flags = VK_FENCE_CREATE_SIGNALED_BIT)) (Rvk_Device){0};
+        RVK_ASSERT(vk_create_semaphore(device.logical, NULL, &device.image_available_sems[i]));
+        RVK_ASSERT(vk_create_semaphore(device.logical, NULL, &device.render_finished_sems[i]));
+        RVK_ASSERT(vk_create_fence(device.logical, NULL, &device.fences[i], .flags = VK_FENCE_CREATE_SIGNALED_BIT));
     }
 
     return device;
+}
+
+void r_destroy_rvk_device(Rvk_Device device)
+{
+    for (size_t i = 0; i < RVK_MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroyFence(device.logical, device.fences[i], NULL);
+        vkDestroySemaphore(device.logical, device.image_available_sems[i], NULL);
+        vkDestroySemaphore(device.logical, device.render_finished_sems[i], NULL);
+    }
+    vkFreeCommandBuffers(device.logical, device.command_pool, RVK_MAX_FRAMES_IN_FLIGHT, device.cmd_buffs);
+    vkDestroyCommandPool(device.logical, device.command_pool, NULL);
+    vkDestroyDevice(device.logical, NULL);
 }
 
 VkSurfaceFormatKHR r_choose_swapchain_surface_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
@@ -777,74 +815,87 @@ Rvk_Swapchain r_create_rvk_swapchain(Rvk_Device device, VkSurfaceKHR surface, in
                                  .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE)) return (Rvk_Swapchain){0};
 
     /* query ACTUAL image count */
-    if (!RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count, NULL)))
-        return (Rvk_Swapchain){0};
-    if (swapchain.image_count > RVK_MAX_SWAPCHAIN_IMAGES) {
-        r_log(RVK_ERROR, "swapchain RVK_MAX_SWAPCHAIN_IMAGES %zu was exceeded", RVK_MAX_SWAPCHAIN_IMAGES);
-        return (Rvk_Swapchain){0};
-    }
-    if (!RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count,
-                                     swapchain.images))) return (Rvk_Swapchain){0};
+    RVK_ASSERT(RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count, NULL)));
+    RVK_ASSERT(swapchain.image_count <= RVK_MAX_SWAPCHAIN_IMAGES);
+    RVK_ASSERT(RVK(vkGetSwapchainImagesKHR(device.logical, swapchain.handle, &swapchain.image_count,
+                                           swapchain.images)));
 
     /* create the image views for the swapchain */
     for (size_t i = 0; i < swapchain.image_count; i++) {
-        if (!vk_create_image_view(device.logical, NULL, &swapchain.image_views[i],
-                                  .image = swapchain.images[i],
-                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                  .format = swapchain.surface_format.format,
-                                  .subresourceRange = {
-                                      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                      .levelCount = 1,
-                                      .layerCount = 1,
-                                  })) return (Rvk_Swapchain){0};
+        RVK_ASSERT(vk_create_image_view(device.logical, NULL, &swapchain.image_views[i],
+                                        .image = swapchain.images[i],
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                        .format = swapchain.surface_format.format,
+                                        .subresourceRange = {
+                                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                            .levelCount = 1,
+                                            .layerCount = 1,
+                                        }));
     }
 
     /* create depth image */
     swapchain.depth_format = VK_FORMAT_D32_SFLOAT; // TODO: create r_choose_depth_format
 
-    if (!(swapchain.depth_image = r_create_2D_image(device.logical, swapchain.depth_format,
+    RVK_ASSERT((swapchain.depth_image = r_create_2D_image(device.logical, swapchain.depth_format,
                                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                                    swapchain.extent))) return (Rvk_Swapchain){0};
-    if (!(swapchain.depth_image_memory = r_allocate_and_bind_image_memory(device,
+                                                    swapchain.extent)));
+    RVK_ASSERT((swapchain.depth_image_memory = r_allocate_and_bind_image_memory(device,
                                                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                                          swapchain.depth_image))) return (Rvk_Swapchain){0};
-    if (!vk_create_image_view(device.logical, NULL, &swapchain.depth_image_view,
-                              .image = swapchain.depth_image,
-                              .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                              .format = swapchain.depth_format,
-                              .subresourceRange = {
-                                  .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                  .levelCount = 1, .layerCount = 1,
-                              })) return (Rvk_Swapchain){0};
+                                                                          swapchain.depth_image)));
+    RVK_ASSERT(vk_create_image_view(device.logical, NULL, &swapchain.depth_image_view,
+                                    .image = swapchain.depth_image,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = swapchain.depth_format,
+                                    .subresourceRange = {
+                                        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                        .levelCount = 1, .layerCount = 1,
+                                    }));
 
-    swapchain.render_pass = r_create_render_pass(device.logical, swapchain.depth_format, swapchain.surface_format.format);
-    if (!swapchain.render_pass) return (Rvk_Swapchain){0};
-    if (!r_init_framebuffers(device.logical, &swapchain, swapchain.render_pass)) return (Rvk_Swapchain){0};
+    RVK_ASSERT(swapchain.render_pass = r_create_render_pass(device.logical,
+                                                            swapchain.depth_format,
+                                                            swapchain.surface_format.format));
+    RVK_ASSERT(r_init_framebuffers(device.logical, &swapchain, swapchain.render_pass));
 
     return swapchain;
 }
 
-// VkPipelineShaderStageCreateInfo r_create_vertex_shader(size_t code_size, const uint32_t *code)
-// {
-//     VkPipelineShaderStageCreateInfo ci = {
-//         .stage = VK_SHADER_STAGE_VERTEX_BIT,
-//         .pName = "main"
-//     };
-//     if (!vk_create_shader_module(device.logical, NULL, &stage.module,
-//                                  .codeSize = code_size, .pCode = code)) return (VkPipelineShaderStageCreateInfo){0};
-//     return ci;
-// }
-//
-// VkPipelineShaderStageCreateInfo r_create_fragment_shader(size_t code_size, const uint32_t *code)
-// {
-//     VkPipelineShaderStageCreateInfo ci = {
-//         .stage = VK_SHADER_STAGE_FRAGMENT_BIT
-//         .pName = "main"
-//     };
-//     if (!vk_create_shader_module(device.logical, NULL, &stage.module,
-//                                  .codeSize = code_size, .pCode = code)) return (VkPipelineShaderStageCreateInfo){0};
-//     return ci;
-// }
+void r_destroy_rvk_swapchain(VkDevice device, Rvk_Swapchain swapchain)
+{
+    for (size_t i = 0; i < swapchain.image_count; i++)
+        vkDestroyFramebuffer(device, swapchain.framebuffers[i], NULL);
+    vkDestroyImageView(device, swapchain.depth_image_view, NULL);
+    vkDestroyImage(device, swapchain.depth_image, NULL);
+    vkFreeMemory(device, swapchain.depth_image_memory, NULL);
+    vkDestroyRenderPass(device, swapchain.render_pass, NULL);
+    for (size_t i = 0; i < swapchain.image_count; i++)
+        vkDestroyImageView(device, swapchain.image_views[i], NULL);
+    vkDestroySwapchainKHR(device, swapchain.handle, NULL);
+}
+
+VkPipelineShaderStageCreateInfo r_create_vertex_stage_ci(VkDevice device, size_t code_size, const uint32_t *code)
+{
+    return (VkPipelineShaderStageCreateInfo) {
+        .stage  = VK_SHADER_STAGE_VERTEX_BIT,
+        .pName  = "main",
+        .module = r_create_shader_module(device, code_size, code),
+    };
+}
+
+VkPipelineShaderStageCreateInfo r_create_fragment_stage_ci(VkDevice device, size_t code_size, const uint32_t *code)
+{
+    return (VkPipelineShaderStageCreateInfo) {
+        .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pName  = "main",
+        .module = r_create_shader_module(device, code_size, code),
+    };
+}
+
+VkShaderModule r_create_shader_module(VkDevice device, size_t code_size, const uint32_t *code)
+{
+    VkShaderModule module = VK_NULL_HANDLE;
+    vk_create_shader_module(device, NULL, &module, .codeSize = code_size, .pCode = code);
+    return module;
+}
 
 VkImage r_create_2D_image(VkDevice device, VkFormat format, VkImageUsageFlags flags, VkExtent2D extent)
 { // TODO: since this is the simple "r_*" function, I feel like it should also allocate and bind_image_memory
@@ -948,104 +999,130 @@ bool r_init_framebuffers(VkDevice device, Rvk_Swapchain *swapchain, VkRenderPass
     return result;
 }
 
-VkPipelineDepthStencilStateCreateInfo r_default_depth_stencil_state_ci()
+VkPipelineDepthStencilStateCreateInfo *r_temp_default_depth_stencil_state_ci(void)
 {
-    return (VkPipelineDepthStencilStateCreateInfo) {
+    VkPipelineDepthStencilStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineDepthStencilStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable = VK_TRUE,
         .depthWriteEnable = VK_TRUE,
         .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
         .maxDepthBounds = 1.0f,
     };
+    return ci;
 }
 
-VkPipelineRasterizationStateCreateInfo r_default_rasterization_state_ci()
+VkPipelineRasterizationStateCreateInfo *r_temp_default_rasterization_state_ci(void)
 {
-    return (VkPipelineRasterizationStateCreateInfo) {
+    VkPipelineRasterizationStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineRasterizationStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .lineWidth = 1.0f,
         .cullMode = VK_CULL_MODE_NONE,
     };
+    return ci;
 }
 
-VkPipelineMultisampleStateCreateInfo r_default_multisample_state_ci()
+VkPipelineMultisampleStateCreateInfo *r_temp_default_multisample_state_ci(void)
 {
-    return (VkPipelineMultisampleStateCreateInfo) {
+    VkPipelineMultisampleStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineMultisampleStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
+    return ci;
 }
 
 
-VkPipelineViewportStateCreateInfo r_default_viewport_state_ci(VkExtent2D extent)
+VkPipelineViewportStateCreateInfo *r_temp_default_viewport_state_ci(VkExtent2D extent)
 {
-    static VkViewport default_viewport_state = {0};
-    static VkRect2D default_scissor_state = {0};
+    VkViewport *default_viewport_state = r_temp_alloc(sizeof(*default_viewport_state));
+    VkRect2D *default_scissor_state    = r_temp_alloc(sizeof(*default_scissor_state));
 
-    default_viewport_state.width    = extent.width;
-    default_viewport_state.height   = extent.height;
-    default_viewport_state.maxDepth = 1.0f;
-    default_scissor_state.extent    = extent;
-    return (VkPipelineViewportStateCreateInfo) {
+    default_viewport_state->width    = extent.width;
+    default_viewport_state->height   = extent.height;
+    default_viewport_state->maxDepth = 1.0f;
+    default_scissor_state->extent    = extent;
+
+    VkPipelineViewportStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineViewportStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1,
-        .pViewports = &default_viewport_state,
+        .pViewports = default_viewport_state,
         .scissorCount = 1,
-        .pScissors = &default_scissor_state,
+        .pScissors = default_scissor_state,
     };
+    return ci;
 }
 
-VkPipelineInputAssemblyStateCreateInfo r_default_input_assembly_state_ci()
+VkPipelineInputAssemblyStateCreateInfo *r_temp_default_input_assembly_state_ci(void)
 {
-    return (VkPipelineInputAssemblyStateCreateInfo) {
+    VkPipelineInputAssemblyStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineInputAssemblyStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     };
+    return ci;
 }
 
-VkPipelineVertexInputStateCreateInfo r_default_simple_2D_vertex_input_state_ci()
+VkPipelineVertexInputStateCreateInfo *r_temp_default_simple_2D_vertex_input_state_ci(void)
 {
-    static VkVertexInputBindingDescription default_vertex_input_state = {
+    VkVertexInputBindingDescription *input_binding_desc = r_temp_alloc(sizeof(*input_binding_desc));
+    *input_binding_desc = (VkVertexInputBindingDescription) {
         .binding   = 0,
         .stride    = sizeof(Rvk_Simple_2D_Vertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
-    static VkVertexInputAttributeDescription vert_attrs[] = {
-        { .location = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Rvk_Simple_2D_Vertex, position)},
-        { .location = 1, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(Rvk_Simple_2D_Vertex, color)},
-    };
-    return (VkPipelineVertexInputStateCreateInfo) {
+    VkVertexInputAttributeDescription *vert_attrs = r_temp_alloc(2*sizeof(*vert_attrs));
+    vert_attrs[0].location = 0;
+    vert_attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    vert_attrs[0].offset = offsetof(Rvk_Simple_2D_Vertex, position);
+    vert_attrs[1].location = 1;
+    vert_attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vert_attrs[1].offset = offsetof(Rvk_Simple_2D_Vertex, color);
+
+    VkPipelineVertexInputStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineVertexInputStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &default_vertex_input_state,
-        .vertexAttributeDescriptionCount = RVK_ARRAY_LEN(vert_attrs),
+        .pVertexBindingDescriptions = input_binding_desc,
+        .vertexAttributeDescriptionCount = 2,
         .pVertexAttributeDescriptions = vert_attrs,
     };
+    return ci;
 }
 
-VkPipelineColorBlendStateCreateInfo r_default_color_blend_state_ci()
+VkPipelineColorBlendStateCreateInfo *r_temp_default_color_blend_state_ci(void)
 {
-    static VkPipelineColorBlendAttachmentState color_blend = {
+    VkPipelineColorBlendAttachmentState *attachment = r_temp_alloc(sizeof(*attachment));
+    *attachment = (VkPipelineColorBlendAttachmentState) {
         .colorWriteMask = 0xf, // rgba
         .blendEnable = VK_FALSE,
     };
-    return (VkPipelineColorBlendStateCreateInfo) {
+
+    VkPipelineColorBlendStateCreateInfo *color_blend = r_temp_alloc(sizeof(*color_blend));
+    *color_blend = (VkPipelineColorBlendStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1,
-        .pAttachments = &color_blend,
+        .pAttachments = attachment,
         .logicOp = VK_LOGIC_OP_COPY,
     };
+    return color_blend;
 }
 
-VkPipelineDynamicStateCreateInfo r_default_dynamic_state_ci()
+VkPipelineDynamicStateCreateInfo *r_temp_default_dynamic_state_ci(void)
 {
-    static VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    return (VkPipelineDynamicStateCreateInfo) {
+    VkDynamicState *dynamic_states = r_temp_alloc(2*sizeof(*dynamic_states));
+    dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
+    dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
+    VkPipelineDynamicStateCreateInfo *ci = r_temp_alloc(sizeof(*ci));
+    *ci = (VkPipelineDynamicStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = RVK_ARRAY_LEN(dynamic_states),
         .pDynamicStates = dynamic_states,
     };
+    return ci;
 }
 
 void r_cmd_set_viewport_scissor(VkCommandBuffer cmd_buff, VkExtent2D extent)
@@ -1103,10 +1180,9 @@ defer:
 
 Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, void *data)
 {
-    bool result = true;
-    assert(device.physical);
-    assert(device.logical);
-    assert(device.command_pool);
+    if (!device.physical) return (Rvk_Buffer){0};
+    if (!device.logical) return (Rvk_Buffer){0};
+    if (!device.command_pool) return (Rvk_Buffer){0};
 
     /* book keeping */
     Rvk_Buffer buff = {.info.range = size};
@@ -1115,21 +1191,21 @@ Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, 
     if (!vk_create_buffer(device.logical, NULL, &buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                           .size = size)) return (Rvk_Buffer){0};
-    if (!(buff.memory = r_allocate_and_bind_buffer_memory(device,
-                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                          buff.info.buffer))) return (Rvk_Buffer){0};
+    RVK_ASSERT(buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                               buff.info.buffer));
 
     /* create a staging buffer */
     Rvk_Buffer stg_buff = {0};
-    if (!vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
-                          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          .size = size)) (Rvk_Buffer){0};
-    if (!(stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
-                                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
-                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                              stg_buff.info.buffer))) return (Rvk_Buffer){0};
+    RVK_ASSERT(vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
+                                .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                .size = size));
+    RVK_ASSERT((stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
+                                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
+                                                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                                    stg_buff.info.buffer)));
     /* copy data to staging buffer */
-    if (!RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return (Rvk_Buffer){0};
+    RVK_ASSERT(RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped)));
     memcpy(stg_buff.mapped, data, size);
     vkUnmapMemory(device.logical, stg_buff.memory);
 
@@ -1148,10 +1224,6 @@ Rvk_Buffer r_create_vertex_buffer(Rvk_Device device, size_t size, size_t count, 
 
 Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, void *data)
 {
-    bool result = true;
-    assert(device.physical);
-    assert(device.logical);
-    assert(device.command_pool);
 
     /* book keeping */
     Rvk_Buffer buff = {.info.range = size};
@@ -1160,21 +1232,21 @@ Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, v
     if (!vk_create_buffer(device.logical, NULL, &buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                           .size = size)) return (Rvk_Buffer){0};
-    if (!(buff.memory = r_allocate_and_bind_buffer_memory(device,
+    RVK_ASSERT((buff.memory = r_allocate_and_bind_buffer_memory(device,
                                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                          buff.info.buffer))) return (Rvk_Buffer){0};
+                                                          buff.info.buffer)));
 
     /* create a staging buffer */
     Rvk_Buffer stg_buff = {0};
-    if (!vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
+    RVK_ASSERT(vk_create_buffer(device.logical, NULL, &stg_buff.info.buffer,
                           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          .size = size)) (Rvk_Buffer){0};
-    if (!(stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
+                          .size = size));
+    RVK_ASSERT((stg_buff.memory = r_allocate_and_bind_buffer_memory(device,
                                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                              stg_buff.info.buffer))) return (Rvk_Buffer){0};
+                                                              stg_buff.info.buffer)));
     /* copy data to staging buffer */
-    if (!RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped))) return (Rvk_Buffer){0};
+    RVK_ASSERT(RVK(vkMapMemory(device.logical, stg_buff.memory, 0, size, 0, &stg_buff.mapped)));
     memcpy(stg_buff.mapped, data, size);
     vkUnmapMemory(device.logical, stg_buff.memory);
 
@@ -1189,6 +1261,33 @@ Rvk_Buffer r_create_index_buffer(Rvk_Device device, size_t size, size_t count, v
     vkFreeMemory(device.logical, stg_buff.memory, NULL);
 
     return buff;
+}
+
+void r_destroy_rvk_buffer(VkDevice device, Rvk_Buffer buffer)
+{
+    vkDestroyBuffer(device, buffer.info.buffer, NULL);
+    vkFreeMemory(device, buffer.memory, NULL);
+}
+
+bool r_wait_reset_fence(VkDevice device, VkFence *fence)
+{
+    if (!RVK(vkWaitForFences(device, 1, fence, VK_TRUE, UINT64_MAX))) return false;
+    if (!RVK(vkResetFences(device, 1, fence))) return false;
+    return true;
+}
+
+// TODO: note that this doesn't handle the case where the swapchain needs to be resized
+bool r_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, VkSemaphore image_available, uint32_t *image_index)
+{
+    return RVK(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, image_available, VK_NULL_HANDLE, image_index));
+}
+
+bool r_reset_begin_cmd_buff(VkCommandBuffer cmd_buff)
+{
+    if (!RVK(vkResetCommandBuffer(cmd_buff, 0))) return false;
+    VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
+    if (!RVK(vkBeginCommandBuffer(cmd_buff, &begin_info))) return false;
+    return true;
 }
 
 bool r_submit(Rvk_Device device, uint32_t current_frame)
@@ -1239,6 +1338,68 @@ void r_cmd_begin_render_pass(VkCommandBuffer cb, VkRenderPass rp, VkFramebuffer 
         .pClearValues = clear_values,
     };
     vkCmdBeginRenderPass(cb, &begin_rp, VK_SUBPASS_CONTENTS_INLINE);
+} 
+
+char *r_temp_strdup(const char *cstr)
+{
+    size_t n = strlen(cstr);
+    char *result = (char*)r_temp_alloc(n + 1);
+    RVK_ASSERT(result != NULL && "Increase RVK_TEMP_CAPACITY");
+    memcpy(result, cstr, n);
+    result[n] = '\0';
+    return result;
+}
+
+char *r_temp_strndup(const char *s, size_t n)
+{
+    char *r = r_temp_alloc(n + 1);
+    RVK_ASSERT(r != NULL && "Extend the size of the temporary allocator");
+    memcpy(r, s, n);
+    r[n] = '\0';
+    return r;
+}
+
+void *r_temp_alloc(size_t requested_size)
+{
+    size_t word_size = sizeof(uintptr_t);
+    size_t size = (requested_size + word_size - 1)/word_size*word_size;
+    if (r_temp_size + size > RVK_TEMP_CAPACITY) return NULL;
+    void *result = &r_temp[r_temp_size];
+    r_temp_size += size;
+    return result;
+}
+
+char *r_temp_sprintf(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+
+    RVK_ASSERT(n >= 0);
+    char *result = (char*)r_temp_alloc(n + 1);
+    RVK_ASSERT(result != NULL && "Extend the size of the temporary allocator");
+    // TODO: use proper arenas for the temporary allocator;
+    va_start(args, format);
+    vsnprintf(result, n + 1, format, args);
+    va_end(args);
+
+    return result;
+}
+
+void r_temp_reset(void)
+{
+    r_temp_size = 0;
+}
+
+size_t r_temp_save(void)
+{
+    return r_temp_size;
+}
+
+void r_temp_rewind(size_t checkpoint)
+{
+    r_temp_size = checkpoint;
 }
 
 /***********************************************************************************
@@ -1389,12 +1550,6 @@ bool vk_create_buffer_(VkDevice device, const VkAllocationCallbacks *pAllocator,
 {
     ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     return RVK(vkCreateBuffer(device, &ci, pAllocator, pBuffer));
-}
-
-bool vk_queue_submit_once_(VkQueue queue, VkFence fence, VkSubmitInfo ci)
-{
-    ci.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    return RVK(vkQueueSubmit(queue, 1, &ci, fence));
 }
 
 #endif // RVK_IMPLEMENTATION
